@@ -1,0 +1,38 @@
+{
+  "name": "prorab",
+  "version": "0.1.0",
+  "description": "Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, and Codex",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "bin": {
+    "prorab": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc && cd ui && npm run build",
+    "build:server": "tsc",
+    "build:ui": "cd ui && npm run build",
+    "dev": "tsc --watch",
+    "dev:server": "tsc --watch",
+    "dev:ui": "cd ui && npm run dev",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.76",
+    "@fastify/static": "^9.0.0",
+    "@fastify/websocket": "^11.2.0",
+    "@openai/codex-sdk": ">=0.114.0 <1.0.0",
+    "@opencode-ai/sdk": "^1.2.26",
+    "commander": "^14.0.3",
+    "fastify": "^5.8.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

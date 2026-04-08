@@ -1,0 +1,64 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Claude console output > debug: output matches snapshot 1`] = `
+[
+  "[2m  [init] model=claude-opus-4-6, tools=41, cwd=/tmp/test[0m",
+  "[36m  [assistant] Now I understand the structure. Let me check existing tests to follow patterns:[0m",
+  "[36m  [assistant] Now I'll implement both computed properties in App.vue:[0m",
+  "[36m  [assistant] Now let me verify the updated file and write the tests:[0m",
+  "[36m  [tool] Read:
+{
+  "file_path": "/home/user/projects/test-app/CLAUDE.md"
+}[0m",
+  "[36m  [tool] Read:
+{
+  "file_path": "/home/user/projects/test-app/AGENTS.md"
+}[0m",
+  "[36m  [tool] Read:
+{
+  "file_path": "/home/user/projects/test-app/.taskmaster/tasks/tasks.json"
+}[0m",
+  "[36m  [tool] Bash:
+{
+  "command": "find /home/user -maxdepth 3 -name \\"CLAUDE.md\\" -o -name \\"AGENTS.md\\" -o -name \\"tasks.json\\" 2>/dev/null | head -20",
+  "description": "Find project files"
+}[0m",
+  "[36m  [tool] Bash:
+{
+  "command": "ls /home/user/projects/ 2>/dev/null || ls /home/user/ 2>/dev/null | head -30",
+  "description": "List project directories"
+}[0m",
+  "[36m  [tool-result] Read file /home/user/projects/test-app/CLAUDE.md[0m",
+  "[36m  [tool-result] Ran command: npm test -- --reporter=verbose[0m",
+  "[2m  [running] Bash (6s elapsed)[0m",
+  "[2m  [stderr] warning: some agent stderr output[0m",
+  "[2m  [status] Processing tool results...[0m",
+  "[2m  [task-started] Run tests for App computed[0m",
+  "[2m  [task-started] Run App tests again[0m",
+  "[2m  [task-started] Run all project tests[0m",
+  "[2m  [rate-limit] five_hour: allowed, resets at 1771981200[0m",
+]
+`;
+
+exports[`Claude console output > info: output matches snapshot 1`] = `
+[
+  "[2m  [init] model=claude-opus-4-6, tools=41, cwd=/tmp/test[0m",
+  "[2m  [assistant] Now I understand the structure. Let me check existing tests to follow patterns:[0m",
+  "[2m  [assistant] Now I'll implement both computed properties in App.vue:[0m",
+  "[2m  [assistant] Now let me verify the updated file and write the tests:[0m",
+  "[2m  [tool] Read: /home/user/projects/test-app/CLAUDE.md[0m",
+  "[2m  [tool] Read: /home/user/projects/test-app/AGENTS.md[0m",
+  "[2m  [tool] Read: /home/user/projects/test-app/.taskmaster/tasks/tasks.json[0m",
+  "[2m  [tool] Bash: find /home/user -maxdepth 3 -name "CLAUDE.md" -o -name "AGENTS.md" -o -name "tas…[0m",
+  "[2m  [tool] Bash: ls /home/user/projects/ 2>/dev/null || ls /home/user/ 2>/dev/null | head -30[0m",
+  "[2m  [tool-result] Read file /home/user/projects/test-app/CLAUDE.md[0m",
+  "[2m  [tool-result] Ran command: npm test -- --reporter=verbose[0m",
+  "[2m  [running] Bash (6s elapsed)[0m",
+  "[2m  [stderr] warning: some agent stderr output[0m",
+  "[2m  [status] Processing tool results...[0m",
+  "[2m  [task-started] Run tests for App computed[0m",
+  "[2m  [task-started] Run App tests again[0m",
+  "[2m  [task-started] Run all project tests[0m",
+  "[2m  [rate-limit] five_hour: allowed, resets at 1771981200[0m",
+]
+`;

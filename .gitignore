@@ -1,0 +1,23 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Node / TypeScript
+node_modules/
+dist/
+
+# prorab lock file
+.taskmaster/prorab.lock
+/.mcp.json
+
+# Compiled TS artifacts in UI source directories (Vite compiles .ts at build time)
+ui/src/components/*.js
+ui/src/components/*.d.ts
+ui/src/stores/*.js
+ui/src/stores/*.d.ts
+
+# Test coverage
+coverage/

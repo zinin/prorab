@@ -1,0 +1,64 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`OpenCode console output > debug: console.log output matches snapshot 1`] = `
+[
+  "[2m  [opencode] session created: test-session[0m",
+  "[36m  [tool] read:
+{
+  "filePath": "/tmp/test-project/src/components/SearchBar.vue"
+}[0m",
+  "[2m  [running] read (5s elapsed)[0m",
+  "[36m  [tool-result] <path>/tmp/test-project/src/components/SearchBar.vue</path>
+<type>file</type>
+<content>1: <script setup>
+2: import { ref, computed, watch } from 'vue'
+3: 
+4: const props = defineProps({
+5:   groups: {…[0m",
+  "[36m  [tool-result] ERROR: Command failed with exit code 1[0m",
+  "[2m  [opencode] retrying (attempt 1, next in 5s): rate limited[0m",
+  "[36m  [step-finish] tool-calls | in=7833 out=108[0m",
+  "[36m  [step-finish] tool-calls | in=8684 out=172[0m",
+  "[36m  [step-finish] stop | in=9093 out=167[0m",
+]
+`;
+
+exports[`OpenCode console output > debug: stdout streaming output matches snapshot 1`] = `
+[
+  "[36m# Current Task
+
+**Task 6.3**: Создание HTML-шаблона с полем поиска и dropdown
+
+## Description
+Реализовать template секцию с input для поиска и select для фильтрации по группам с корректной привязкой v-model
+
+## Implementation Details
+Создать div-контейнер .search-bar с flex-раскладкой. Добавить input с v-model='searchQuery', placeholder и aria-label для доступности. Создать select с v-model='selectedGroup' и option для каждой группы из props.groups с v-for. Добавить скрытые label элементы с классом visually-hidden для screen readers.
+
+## Test Strategy
+Проверить рендеринг компонента: наличие input с правильным placeholder и select с правильными опциями групп
+[0m",
+  "[36m<think>The user wants me to implement task 6.3 - creating the HTML template for the SearchBar component with a search input and a dropdown (select) for filtering by groups.
+
+Let me first read the existing SearchBar.vue file to understand its current state.
+</think>[0m",
+  "[36mstreaming chunk[0m",
+  "[36mstreaming chunk[0m",
+  "
+",
+]
+`;
+
+exports[`OpenCode console output > info: console.log output matches snapshot 1`] = `
+[
+  "[2m  [opencode] session created: test-session[0m",
+  "[2m  [assistant] # Current Task[0m",
+  "[2m  [assistant] <think>The user wants me to implement task 6.3 - creating the HTML template for the SearchBar component with a search in…[0m",
+  "[2m  [assistant] streaming chunk[0m",
+  "[2m  [tool] read[0m",
+  "[2m  [running] read (5s elapsed)[0m",
+  "[2m  [tool-result] <path>/tmp/test-project/src/components/SearchBar.vue</path>[0m",
+  "[2m  [tool-result] ERROR: Command failed with exit code 1[0m",
+  "[2m  [opencode] retrying (attempt 1, next in 5s): rate limited[0m",
+]
+`;

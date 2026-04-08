@@ -1,0 +1,41 @@
+/**
+ * Shared CSS custom properties for chat and agent output components.
+ *
+ * Reuses the color palette from ExecutionView / EventLogEntry to keep
+ * ChatMessageItem, AskUserQuestion, and the execution log visually consistent.
+ */
+:root {
+  /* ---- Terminal / dark surface ---- */
+  --chat-bg-terminal: #1e1e1e;
+  --chat-bg-surface: #2d2d2d;
+  --chat-text-primary: #d4d4d4;
+  --chat-text-muted: #888;
+
+  /* ---- Semantic colours (mirrored from ExecutionView .event-line.*) ---- */
+  --chat-tool-color: #569cd6;       /* blue  – tool calls          */
+  --chat-result-color: #6a9955;     /* green – tool results        */
+  --chat-error-color: #f44747;      /* red   – errors              */
+  --chat-prefix-color: #ce9178;     /* orange – [agent] / [result] */
+  --chat-question-color: #c586c0;   /* purple – questions          */
+  --chat-prompt-color: #9cdcfe;     /* light blue – prompt bodies  */
+
+  /* ---- Tinted backgrounds (used for bubble types) ---- */
+  --chat-bg-tool: #1e2a3a;
+  --chat-bg-result: #1e2d1e;
+  --chat-bg-error: #3a1e1e;
+  --chat-bg-question: #2d2d3a;
+
+  /* ---- Chat-specific (user / answer bubbles) ---- */
+  --chat-bg-user: #e3f2fd;
+  --chat-text-user: #1a1a1a;
+  --chat-bg-answer: #dbeafe;
+  --chat-text-answer: #1e3a5f;
+
+  /* ---- AskUserQuestion card ---- */
+  --chat-ask-bg: #2d2d3a;
+  --chat-ask-header-bg: #3a3a4a;
+  --chat-ask-border: #3a3a4a;
+  --chat-ask-selected-bg: rgba(197, 134, 192, 0.1);
+  --chat-ask-selected-border: rgba(197, 134, 192, 0.3);
+  --chat-ask-hover-bg: rgba(255, 255, 255, 0.04);
+}
