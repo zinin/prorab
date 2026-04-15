@@ -1,6 +1,6 @@
 const CONTEXT_WINDOWS: Array<{ match: string; limit: number }> = [
-  { match: "opus", limit: 1_000_000 },
-  { match: "sonnet", limit: 1_000_000 },
+  { match: "opus-4", limit: 1_000_000 },
+  { match: "sonnet-4", limit: 1_000_000 },
   { match: "haiku", limit: 200_000 },
 ];
 

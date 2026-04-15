@@ -636,7 +636,7 @@ describe("OpenCodeDriver.processChatEvent()", () => {
           type: "context_usage",
           usage: {
             contextTokens: 1400,
-            contextWindow: 200_000,
+            contextWindow: 1_000_000,
             model: "anthropic/claude-sonnet-4-6",
           },
         },
@@ -666,7 +666,7 @@ describe("OpenCodeDriver.processChatEvent()", () => {
       if (events[0].type === "context_usage") {
         expect(events[0].usage).toMatchObject({
           contextTokens: 500,
-          contextWindow: 200_000,
+          contextWindow: 1_000_000,
           model: "anthropic/claude-sonnet-4-6",
         });
       }

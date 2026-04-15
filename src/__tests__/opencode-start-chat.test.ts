@@ -883,7 +883,7 @@ describe("OpenCodeDriver.startChat()", () => {
       type: "context_usage",
       usage: {
         contextTokens: 1400,
-        contextWindow: 200_000,
+        contextWindow: 1_000_000,
         model: "anthropic/claude-sonnet-4-6",
       },
     });

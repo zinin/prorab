@@ -210,7 +210,7 @@ export class ClaudeDriver implements AgentDriver {
       systemPrompt: opts.systemPrompt,
       cwd: opts.cwd,
       maxTurns: opts.maxTurns,
-      permissionMode: "bypassPermissions",
+      permissionMode: "default",
       abortController: this.chatAbortController,
       settingSources,
       canUseTool: this.createCanUseTool(),
@@ -619,16 +619,21 @@ export class ClaudeDriver implements AgentDriver {
             if (contextTokens > 0) {
               this.lastStreamContextTokens = contextTokens;
               // Emit context_usage on every API call so the UI shows real-time
-              // context tracking during long tool-use turns.
+              // context tracking during long tool-use turns. Skip when the model
+              // is not yet known (no system/init message) — the final result
+              // message will carry the resolved model and emit the definitive
+              // context_usage event.
               const model = this.chatResolvedModel || this.model || "";
-              events.push({
-                type: "context_usage",
-                usage: {
-                  contextTokens,
-                  contextWindow: getContextWindow(model),
-                  model,
-                },
-              });
+              if (model) {
+                events.push({
+                  type: "context_usage",
+                  usage: {
+                    contextTokens,
+                    contextWindow: getContextWindow(model),
+                    model,
+                  },
+                });
+              }
             }
           }
         }

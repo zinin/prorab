@@ -6,12 +6,12 @@ describe("getContextWindow", () => {
     _resetContextWindowCache();
   });
 
-  it("returns 200_000 for model containing 'opus'", () => {
-    expect(getContextWindow("claude-opus-4-6")).toBe(200_000);
+  it("returns 1_000_000 for Claude 4.x opus models", () => {
+    expect(getContextWindow("claude-opus-4-6")).toBe(1_000_000);
   });
 
-  it("returns 200_000 for model containing 'sonnet'", () => {
-    expect(getContextWindow("claude-sonnet-4-6")).toBe(200_000);
+  it("returns 1_000_000 for Claude 4.x sonnet models", () => {
+    expect(getContextWindow("claude-sonnet-4-6")).toBe(1_000_000);
   });
 
   it("returns 200_000 for model containing 'haiku'", () => {
@@ -23,10 +23,10 @@ describe("getContextWindow", () => {
   });
 
   it("matches model substring (e.g. composite OpenCode IDs)", () => {
-    expect(getContextWindow("anthropic/claude-opus-4-6")).toBe(200_000);
+    expect(getContextWindow("anthropic/claude-opus-4-6")).toBe(1_000_000);
   });
 
-  it("matches abstract model names (e.g. 'claude-3-opus-20240229')", () => {
+  it("legacy Claude 3 models fall back to default 200_000", () => {
     expect(getContextWindow("claude-3-opus-20240229")).toBe(200_000);
   });
 });
@@ -57,19 +57,19 @@ describe("setContextWindow / cache", () => {
   });
 
   it("ignores zero contextWindow", () => {
-    setContextWindow("claude-opus-4-6", 0);
-    expect(getContextWindow("claude-opus-4-6")).toBe(200_000);
+    setContextWindow("custom-model", 0);
+    expect(getContextWindow("custom-model")).toBe(200_000);
   });
 
   it("ignores negative contextWindow", () => {
-    setContextWindow("claude-opus-4-6", -1);
-    expect(getContextWindow("claude-opus-4-6")).toBe(200_000);
+    setContextWindow("custom-model", -1);
+    expect(getContextWindow("custom-model")).toBe(200_000);
   });
 
   it("_resetContextWindowCache clears all cached values", () => {
-    setContextWindow("claude-opus-4-6[1m]", 1_000_000);
-    expect(getContextWindow("claude-opus-4-6[1m]")).toBe(1_000_000);
+    setContextWindow("custom-model", 500_000);
+    expect(getContextWindow("custom-model")).toBe(500_000);
     _resetContextWindowCache();
-    expect(getContextWindow("claude-opus-4-6[1m]")).toBe(200_000);
+    expect(getContextWindow("custom-model")).toBe(200_000);
   });
 });

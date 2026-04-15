@@ -29,7 +29,7 @@ describe("Claude context_usage event construction", () => {
     };
 
     expect(event.contextTokens).toBe(160_035);
-    expect(event.contextWindow).toBe(200_000);
+    expect(event.contextWindow).toBe(1_000_000);
     expect(event.model).toBe("claude-opus-4-6");
   });
 

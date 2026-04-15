@@ -112,14 +112,18 @@ export function outcomeErrors(outcome: ParsePrdOutcome | null): string[] {
 }
 
 /**
- * Whether the dismiss / "Done" button should be visible.
+ * Whether the dismiss / "Try Again" button should be visible.
  *
- * Shown in `completed` state for all outcomes (success, failure, cancelled),
- * so the user can return to the wizard.
+ * Shown in `completed` state only for failure/cancelled outcomes — success
+ * auto-redirects via parent view, so no button is needed.
  */
 export function showDismissButton(
   state: ParsePrdStoreState,
   outcome: ParsePrdOutcome | null,
 ): boolean {
-  return state === "completed" && outcome != null;
+  return (
+    state === "completed" &&
+    outcome != null &&
+    outcome.status !== "success"
+  );
 }

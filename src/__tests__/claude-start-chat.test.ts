@@ -229,7 +229,7 @@ describe("ClaudeDriver.startChat()", () => {
     expect(usageEvent).toBeDefined();
     expect(usageEvent!.type === "context_usage" && usageEvent!.usage).toEqual({
       contextTokens: 2100,
-      contextWindow: 200_000,
+      contextWindow: 1_000_000,
       model: "claude-opus-4-6",
     });
   });
@@ -287,7 +287,7 @@ describe("ClaudeDriver.startChat()", () => {
     // Should be the LAST stream_event value (44,300), NOT the cumulative delta (126,600)
     expect(usageEvent!.type === "context_usage" && usageEvent!.usage).toEqual({
       contextTokens: 44_300,
-      contextWindow: 200_000,
+      contextWindow: 1_000_000,
       model: "claude-opus-4-6",
     });
   });

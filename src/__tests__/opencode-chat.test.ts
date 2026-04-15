@@ -422,7 +422,7 @@ describe("processChatEvent: SSE → ChatEvent translation", () => {
         type: "context_usage",
         usage: {
           contextTokens: 1400,
-          contextWindow: 200_000,
+          contextWindow: 1_000_000,
           model: "anthropic/claude-sonnet-4-6",
         },
       },
@@ -1013,7 +1013,7 @@ describe("Full chat lifecycle: startChat → sendMessage → question → reply 
     if (usageEvent?.type === "context_usage") {
       expect(usageEvent.usage).toEqual({
         contextTokens: 2600,
-        contextWindow: 200_000,
+        contextWindow: 1_000_000,
         model: "anthropic/claude-sonnet-4-6",
       });
     }

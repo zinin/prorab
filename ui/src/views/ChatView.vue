@@ -82,7 +82,7 @@ async function handleStop() {
       :state="chatStore.state"
       :awaiting-user-input="chatStore.awaitingUserInput"
       :pending-question="chatStore.pendingQuestion"
-      :can-stop="chatStore.state === 'active' || chatStore.state === 'question_pending'"
+      :can-stop="chatStore.state !== 'idle'"
       @send="handleSend"
       @reply="handleReply"
       @stop="handleStop"

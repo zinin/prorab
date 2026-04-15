@@ -118,10 +118,10 @@ function handleDismiss() {
         />
         <Button
           v-if="canShowDismiss"
-          icon="pi pi-check"
-          severity="success"
+          icon="pi pi-refresh"
+          severity="secondary"
           size="small"
-          label="Done"
+          label="Try Again"
           data-testid="parse-prd-dismiss-button"
           @click="handleDismiss"
         />

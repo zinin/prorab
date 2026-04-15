@@ -447,6 +447,12 @@ describe("ExecutionManager", () => {
       vi.spyOn(gitModule, "hasUncommittedChangesExcluding").mockReturnValue(false);
       vi.spyOn(gitModule, "commitTaskmaster").mockImplementation(() => true);
 
+      // Mock setStatusDirect to avoid touching real tasks.json
+      const tasksJsonModule = await import("../core/tasks-json.js");
+      const setStatusDirectSpy = vi
+        .spyOn(tasksJsonModule, "setStatusDirect")
+        .mockImplementation(() => {});
+
       // Mock createDriver to return a fake driver
       const driver = fakeDriver();
       const factoryModule = await import("../core/drivers/factory.js");
@@ -458,6 +464,7 @@ describe("ExecutionManager", () => {
         driver,
         cleanup() {
           createDriverSpy.mockRestore();
+          setStatusDirectSpy.mockRestore();
           vi.mocked(gitModule.hasUncommittedChangesExcluding).mockRestore();
           vi.mocked(gitModule.commitTaskmaster).mockRestore();
         },
