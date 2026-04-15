@@ -217,13 +217,11 @@ Your project root is: ${cwd}
 
 1. **Fix all issues**: Address every issue from the code review, prioritizing CRITICAL > IMPORTANT > MINOR.
 2. **Commit your code**: Stage and commit changes with a meaningful message. Do NOT stage or commit .taskmaster/ files.
-3. **Keep project docs current**: Update CLAUDE.md or AGENTS.md (whichever holds the project description) if your changes affect project structure.
-   - If neither file exists: after fixing issues (but before <task-report>), run /init to generate the project description file. If /init is unavailable, create AGENTS.md manually.
-4. **Write a report**: Before signaling completion, write:
+3. **Write a report**: Before signaling completion, write:
    <task-report>Brief summary of fixes applied.</task-report>
-5. **Signal completion**: <task-complete>DONE</task-complete>
-6. **Signal if blocked**: <task-blocked>Describe why</task-blocked>
-7. **Do not modify task statuses** — the orchestrator manages lifecycle.
+4. **Signal completion**: <task-complete>DONE</task-complete>
+5. **Signal if blocked**: <task-blocked>Describe why</task-blocked>
+6. **Do not modify task statuses** — the orchestrator manages lifecycle.
 
 ## Critical Thinking
 
