@@ -169,6 +169,24 @@ describe("CodexDriver — maxTurns enforcement", () => {
     }
   });
 
+  it("aborts on the very first tool-call when maxTurns === 1 (boundary N=1)", async () => {
+    mockThread.runStreamed.mockResolvedValue({
+      events: eventsFrom([
+        threadStarted(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        turnCompleted(),
+      ]),
+    });
+    const driver = new CodexDriver();
+    const result = await driver.runSession(makeOpts({ maxTurns: 1 }));
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(1\)/);
+    expect(result.numTurns).toBe(1);
+  });
+
   it("SDK surfaces abort as DOMException AbortError — still classified as breach", async () => {
     // When abortController.abort(MaxTurnsExceededError) is called, some SDK
     // versions wrap it: the for-await throws a standard AbortError while

@@ -198,6 +198,21 @@ describe("OpenCodeDriver — maxTurns enforcement", () => {
     expect(result.inputTokens).toBeGreaterThan(0);
   });
 
+  it("aborts on the very first turn when maxTurns === 1 (boundary N=1)", async () => {
+    const driver = new OpenCodeDriver();
+    const client = makeMockClient(() =>
+      sseFromArray([stepFinish(), stepFinish(), idle()]),
+    );
+    (driver as unknown as { client: MockClient }).client = client;
+
+    const result = await driver.runSession({ ...baseOpts, maxTurns: 1 });
+
+    expect(client._abortSpy).toHaveBeenCalledTimes(1);
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(1\)/);
+    expect(result.numTurns).toBe(1);
+  });
+
   it("treats maxTurns === 0 as unlimited", async () => {
     const driver = new OpenCodeDriver();
     const client = makeMockClient(() =>
