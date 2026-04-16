@@ -1444,6 +1444,17 @@ export class OpenCodeDriver implements AgentDriver {
         unitId: ctx.unitId,
       });
     }
+
+    // Emit live turn count for UI indicator. We only reach here if the
+    // maxTurns breach branch above did NOT fire (it returns early to
+    // suppress the terminal N/N blip). Safe to emit unconditionally here.
+    ctx.logger.sendToLog({
+      type: "agent:turn_count",
+      numTurns: ctx.numTurns,
+      maxTurns: ctx.maxTurns,
+      model: ctx.model,
+      unitId: ctx.unitId,
+    });
   }
 
   // ---------------------------------------------------------------------------

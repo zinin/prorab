@@ -251,6 +251,15 @@ export class CodexDriver implements AgentDriver {
               item.type === "web_search"
             ) {
               toolCalls++;
+              // Emit live turn count for UI indicator BEFORE the abort check
+              // so the breaching N/N value reaches the UI before the retry.
+              logger.sendToLog({
+                type: "agent:turn_count",
+                numTurns: toolCalls,
+                maxTurns: opts.maxTurns ?? 0,
+                model: modelName,
+                unitId: opts.unitId,
+              });
               if (opts.maxTurns && toolCalls >= opts.maxTurns && !maxTurnsExceeded) {
                 maxTurnsExceeded = true;
                 const err = new MaxTurnsExceededError(opts.maxTurns);

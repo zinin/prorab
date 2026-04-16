@@ -26,6 +26,10 @@ interface ClaudeContext {
   cacheWriteTokens: number;
   model: string;
   unitId: string;
+  /** Maximum agentic turns from SessionOptions; mirrors SDK's maxTurns. */
+  maxTurns: number;
+  /** Live counter incremented on each handleAssistant call (one per assistant SDK message). */
+  numApiCalls: number;
   /** Tracks displayed tool_progress events (5s bucket throttle). */
   reportedTools: Set<string>;
 }
@@ -733,6 +737,8 @@ export class ClaudeDriver implements AgentDriver {
       cacheWriteTokens: 0,
       model: "unknown",
       unitId: opts.unitId,
+      maxTurns: opts.maxTurns,
+      numApiCalls: 0,
       reportedTools: new Set(),
     };
   }
@@ -791,6 +797,19 @@ export class ClaudeDriver implements AgentDriver {
 
   /** Handle assistant message: extract text and tool_use content blocks. */
   private handleAssistant(msg: Record<string, unknown>, ctx: ClaudeContext): void {
+    // Live turn count for UI indicator. SDK only exposes num_turns at end of
+    // session via the `result` message — too late for the live indicator.
+    // We maintain our own counter incremented per assistant SDK message.
+    // Only fires from runSession; startChat uses sdkMessageToChatEvents instead.
+    ctx.numApiCalls++;
+    ctx.logger.sendToLog({
+      type: "agent:turn_count",
+      numTurns: ctx.numApiCalls,
+      maxTurns: ctx.maxTurns,
+      model: ctx.model,
+      unitId: ctx.unitId,
+    });
+
     const content = (msg as unknown as { message: { content: Array<Record<string, unknown>> } }).message.content;
     for (const block of content) {
       if (block.type === "text") {
