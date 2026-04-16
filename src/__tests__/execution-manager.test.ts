@@ -18,6 +18,7 @@ function defaultOptions(overrides: Partial<ExecuteOptions> = {}): ExecuteOptions
     agent: "claude",
     maxRetries: 1,
     maxTurns: 10,
+    reviewMaxTurns: 10,
     debug: false,
     trace: false,
     quiet: false,

@@ -11,6 +11,7 @@ const RunOptionsSchema = z.object({
   variant: z.string().optional(),
   maxRetries: z.coerce.number().int().positive(),
   maxTurns: z.coerce.number().int().positive(),
+  reviewMaxTurns: z.coerce.number().int().positive().default(100),
   allowDirty: z.boolean(),
   quiet: z.boolean(),
   debug: z.boolean(),

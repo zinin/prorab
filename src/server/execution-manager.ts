@@ -25,6 +25,7 @@ export interface ExecuteOptions {
   model?: string;
   maxRetries: number;
   maxTurns: number;
+  reviewMaxTurns: number;
   maxIterations?: number;
   onLog?: OnLogCallback;
   lockAlreadyAcquired?: boolean;
@@ -178,6 +179,7 @@ export class ExecutionManager {
       model: options.model,
       maxRetries: options.maxRetries,
       maxTurns: options.maxTurns,
+      reviewMaxTurns: options.reviewMaxTurns,
       maxIterations: options.maxIterations,
       allowDirty: options.allowDirty,
       quiet: options.quiet,

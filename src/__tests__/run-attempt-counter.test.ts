@@ -109,6 +109,7 @@ const defaultOptions: RunOptions = {
   agent: "claude",
   maxRetries: 0,
   maxTurns: 10,
+  reviewMaxTurns: 10,
   allowDirty: false,
   quiet: false,
   debug: false,

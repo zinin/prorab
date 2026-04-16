@@ -366,6 +366,7 @@ export interface RunOptions {
   variant?: string;
   maxRetries: number;
   maxTurns: number;
+  reviewMaxTurns: number;
   allowDirty: boolean;
   quiet: boolean;
   debug: boolean;
