@@ -20,25 +20,30 @@
 - `src/server/routes/execution.ts` — add `reviewMaxTurns` to Zod body schema; pass through.
 - `src/server/execution-manager.ts` — add `reviewMaxTurns` to `ExecuteOptions` + `RunOptions` construction.
 - `src/commands/run.ts` — route `reviewMaxTurns` into reviewer + aggregator `runSession` calls.
-- `src/core/drivers/opencode.ts` — store `maxTurns` in `OpenCodeContext`; enforce limit in `handleStepFinish`; emit `agent:turn_count`.
-- `src/core/drivers/codex.ts` — count tool-call `item.completed` events; abort on limit; map abort reason to error signal; emit `agent:turn_count`; replace `numTurns: 1` with real count.
-- `src/core/drivers/claude.ts` — emit `agent:turn_count` per assistant SDK message.
+- `src/core/drivers/types.ts` — add `MaxTurnsExceededError` class (shared).
+- `src/core/drivers/opencode.ts` — store `maxTurns`/`aborted`/`maxTurnsExceeded` in `OpenCodeContext`; enforce limit in `handleStepFinish`; guard handlers post-abort; preserve metrics; emit `agent:turn_count`; return `signal: none` with reason in `resultText`.
+- `src/core/drivers/codex.ts` — count tool-call `item.completed` events; abort on limit with `MaxTurnsExceededError`; guard loop post-abort; preserve metrics; emit `agent:turn_count`; replace `numTurns: 1` with `Math.max(1, toolCalls)`; return `signal: none` with reason in `resultText`.
+- `src/core/drivers/claude.ts` — add `maxTurns`, `unitId`, `numApiCalls` to `ClaudeContext`; emit `agent:turn_count` from `handleAssistant` only in `runSession` (not `startChat`).
 
 **Modified (frontend):**
-- `ui/src/stores/execution.ts` — add `turnUsageByUnit` state + `updateTurnUsage` action, mirror `contextUsage` pattern; add `startExecution` field `reviewMaxTurns`.
-- `ui/src/composables/useWebSocket.ts` — route `agent:turn_count` to `execStore.updateTurnUsage`.
-- `ui/src/views/ExecutionView.vue` — add `REVIEW MAX TURNS` input inside the Reviewers block; render `Turns n / N p%` indicator.
+- `ui/src/stores/execution.ts` — add `turnUsageByUnit` state + `updateTurnUsage` / `clearTurnUsage` actions, mirror `contextUsage` pattern; reset on lifecycle events.
+- `ui/src/composables/useWebSocket.ts` — route `agent:turn_count` to `execStore.updateTurnUsage`; reset `turnUsageByUnit` on `execution:multi_review_started` / `execution:reviewer_finished` / `execution:all_done`.
+- `ui/src/views/ExecutionView.vue` — add `REVIEW MAX TURNS` input inside the Reviewers block (with `usePersistedRef("prorab:reviewMaxTurns", 100)`); render `Turns n / N p%` indicator; include `reviewMaxTurns` in payload.
 
 **Created (tests):**
 - `src/__tests__/opencode-max-turns.test.ts`
 - `src/__tests__/codex-max-turns.test.ts`
+- `src/__tests__/claude-turn-count.test.ts`
 - `src/__tests__/execution-route-review-max-turns.test.ts`
-- `src/__tests__/run-routes-review-max-turns.test.ts`
 - `src/__tests__/ui-execution-store-turn-usage.test.ts`
+- `src/__tests__/ui-execution-turns-indicator.test.ts`
 
 **Modified (tests):**
-- `src/__tests__/driver-runner.test.ts` — update `stubSessionOpts` if needed.
+- `src/__tests__/execute-review-rework.test.ts` — add reviewer / aggregator / rework / execute maxTurns routing + retry assertions.
+- `src/__tests__/ws-channel-routing.test.ts` — add `agent:turn_count` routing case.
 - `src/__tests__/execution-manager.test.ts` — extend `defaultOptions` with `reviewMaxTurns`.
+- `src/__tests__/driver-runner.test.ts` — `stubSessionOpts` unchanged (no `reviewMaxTurns` there — it's a run-level option, not SessionOptions).
+- All other `__tests__/*.test.ts` files that construct `RunOptions` / `ExecuteOptions` literals — tsc-driven sweep in Task 1.
 
 ---
 
@@ -126,19 +131,28 @@ function defaultOptions(overrides: Partial<ExecuteOptions> = {}): ExecuteOptions
 
 Use `10` (matches the existing terse `maxTurns: 10` used in the file so assertions remain consistent).
 
-- [ ] **Step 4: Run the type-check and tests**
+- [ ] **Step 4: tsc-driven sweep of all existing `RunOptions` / `ExecuteOptions` literals in tests**
+
+After the type change, `tsc` will flag every test fixture that builds a full `RunOptions` or `ExecuteOptions` without `reviewMaxTurns`. Run `npm run build 2>&1 | tail -60` and fix each reported line by adding `reviewMaxTurns: 10` (test-appropriate small value) to the literal. At minimum the following files are known to need updates:
+
+- `src/__tests__/execute-review-rework.test.ts` (~line 119)
+- `src/__tests__/run-attempt-counter.test.ts` (~line 108)
+
+There may be others — trust the compiler's error list, add the field, re-run build until clean.
+
+- [ ] **Step 5: Run the type-check and tests**
 
 Run: `npm run build 2>&1 | tail -40`
 Expected: Compiles without errors.
 
-Run: `npx vitest run src/__tests__/execution-manager.test.ts`
-Expected: All tests pass (store tests may still fail; that's fine — we haven't changed them yet).
+Run: `npx vitest run src/__tests__/execution-manager.test.ts src/__tests__/execute-review-rework.test.ts src/__tests__/run-attempt-counter.test.ts`
+Expected: All tests pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/types.ts src/server/execution-manager.ts src/__tests__/execution-manager.test.ts
-git commit -m "types: add reviewMaxTurns to RunOptions and ExecuteOptions"
+git add src/types.ts src/server/execution-manager.ts src/__tests__/
+git commit -m "types: add reviewMaxTurns to RunOptions/ExecuteOptions + fixture sweep"
 ```
 
 ---
@@ -161,7 +175,7 @@ const RunOptionsSchema = z.object({
   variant: z.string().optional(),
   maxRetries: z.coerce.number().int().positive(),
   maxTurns: z.coerce.number().int().positive(),
-  reviewMaxTurns: z.coerce.number().int().positive(),
+  reviewMaxTurns: z.coerce.number().int().positive().default(100),
   allowDirty: z.boolean(),
   quiet: z.boolean(),
   debug: z.boolean(),
@@ -350,139 +364,50 @@ git commit -m "route: add reviewMaxTurns to /api/execute body schema"
 
 **Files:**
 - Modify: `src/commands/run.ts:594, 780`
-- Test: `src/__tests__/run-routes-review-max-turns.test.ts` (create)
+- Test: `src/__tests__/execute-review-rework.test.ts` (extend — no new test file)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing routing assertions in `execute-review-rework.test.ts`**
 
-Create `src/__tests__/run-routes-review-max-turns.test.ts`:
+Open `src/__tests__/execute-review-rework.test.ts`. The file already has fixtures that spin up `executeReviewCycle` / `executeUnit` with mock drivers (`createDriver` is mocked). Reuse that plumbing.
+
+Add four tests with distinguishable values (`maxTurns: 200`, `reviewMaxTurns: 42`). Each captures `runSession` arguments via a `vi.fn()` spy and asserts:
 
 ```typescript
 import { describe, it, expect, vi } from "vitest";
-import type { AgentDriver } from "../core/drivers/types.js";
-import type { IterationResult } from "../types.js";
+// ... existing imports
 
-/**
- * Verifies that run.ts passes reviewMaxTurns to reviewer and aggregator sessions,
- * and keeps the execute/rework calls on options.maxTurns.
- */
 describe("run.ts — reviewMaxTurns routing", () => {
-  it("passes reviewMaxTurns through SessionOptions for review + aggregator", async () => {
-    const captured: Array<{ label: string; maxTurns: number }> = [];
+  it("reviewer runSession gets reviewMaxTurns", async () => {
+    const spy = vi.fn().mockResolvedValue(/* completed IterationResult */);
+    // wire spy through existing mock-driver helper in this file
+    await runReviewCycleWithOptions({ maxTurns: 200, reviewMaxTurns: 42 });
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ maxTurns: 42 }));
+  });
 
-    const makeDriver = (label: string): AgentDriver => ({
-      async runSession(opts) {
-        captured.push({ label, maxTurns: opts.maxTurns });
-        return {
-          signal: { type: "complete" },
-          numTurns: 1,
-          durationMs: 0,
-          costUsd: 0,
-          resultText: "<review-report>ok</review-report>",
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-          model: "mock",
-          agentReport: null,
-          reviewReport: "ok",
-          startedAt: "",
-          finishedAt: "",
-        } as IterationResult;
-      },
-      startChat: () => ({ [Symbol.asyncIterator]: async function* () {} }),
-      sendMessage: () => {},
-      replyQuestion: () => {},
-      abortChat: () => {},
-    });
+  it("aggregator runSession gets reviewMaxTurns", async () => {
+    // Two reviewers so aggregator runs
+    // assert aggregator-call-arg.maxTurns === 42
+  });
 
-    vi.doMock("../core/drivers/factory.js", () => ({
-      createDriver: (_agent: string) => makeDriver(`reviewer-${captured.length}`),
-    }));
-    const { executeReviewCycle } = await import("../commands/run.js");
+  it("rework runSession gets maxTurns (not reviewMaxTurns)", async () => {
+    // Put task into rework state, run executeRework
+    // assert rework-call-arg.maxTurns === 200
+  });
 
-    // Minimal RunOptions with both limits set to distinguishable values
-    const options = {
-      agent: "claude" as const,
-      maxRetries: 0,
-      maxTurns: 200,
-      reviewMaxTurns: 42,
-      allowDirty: false,
-      quiet: true,
-      debug: false,
-      trace: false,
-      userSettings: false,
-      applyHooks: false,
-      review: true,
-      reviewers: [{ agent: "claude" as const }, { agent: "codex" as const }],
-      reviewRounds: 1,
-      reviewContext: false,
-    };
-
-    // The call itself requires a Task + cwd + existing driver — for the
-    // purposes of this assertion we only need to verify that each reviewer
-    // session and the aggregator see maxTurns === 42. Callers of
-    // executeReviewCycle in tests should adapt to the existing fixture
-    // style in execute-review-rework.test.ts.
-    // (In the real plan, model this test after execute-review-rework.test.ts.)
-    expect(options.reviewMaxTurns).toBe(42);
-    expect(options.maxTurns).toBe(200);
-    // Fleshed-out driver/task invocation provided by the
-    // existing execute-review-rework.test.ts fixture in Step 3.
+  it("execute runSession gets maxTurns (not reviewMaxTurns)", async () => {
+    // assert execute-call-arg.maxTurns === 200
   });
 });
 ```
 
-> **Note:** this is a minimal smoke test; the richer assertion belongs in the existing `execute-review-rework.test.ts`. Step 3 extends that test instead.
+The prior "smoke test" in `run-routes-review-max-turns.test.ts` is dropped — it tested nothing beyond a local constant. Reuse the real fixture in `execute-review-rework.test.ts` which already drives the `run.ts` code paths through a mock-driver factory.
 
-- [ ] **Step 2: Run smoke test to verify compile**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `npx vitest run src/__tests__/run-routes-review-max-turns.test.ts`
-Expected: PASS (trivial assertion), proving the types line up.
+Run: `npx vitest run src/__tests__/execute-review-rework.test.ts -t "reviewMaxTurns routing"`
+Expected: FAIL for all four — `run.ts` currently passes `options.maxTurns` everywhere.
 
-- [ ] **Step 3: Extend `execute-review-rework.test.ts` with a routing assertion**
-
-Open `src/__tests__/execute-review-rework.test.ts`. Find the test that exercises the review path (search for `executeReviewCycle` or for the existing `maxTurns: 10` usage). Add a new test that spies on `runSession` and asserts:
-
-- The reviewer invocation receives `maxTurns` equal to `options.reviewMaxTurns`.
-- The execute invocation (if reachable in the same test) receives `maxTurns` equal to `options.maxTurns`.
-
-Concrete pattern:
-
-```typescript
-it("passes reviewMaxTurns to reviewer runSession", async () => {
-  const runSessionSpy = vi.fn().mockResolvedValue({
-    signal: { type: "complete" },
-    numTurns: 1,
-    durationMs: 0,
-    costUsd: 0,
-    resultText: "<review-report>ok</review-report>",
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    reasoningTokens: 0,
-    model: "mock",
-    agentReport: null,
-    reviewReport: "ok",
-    startedAt: "",
-    finishedAt: "",
-  });
-  // ... wire mock driver into createDriver, call executeReviewCycle
-  expect(runSessionSpy).toHaveBeenCalledWith(
-    expect.objectContaining({ maxTurns: 42 }),
-  );
-});
-```
-
-Use the concrete fixture already present in that file; adjust values so `maxTurns: 200` and `reviewMaxTurns: 42` are distinguishable.
-
-- [ ] **Step 4: Run test to verify it fails**
-
-Run: `npx vitest run src/__tests__/execute-review-rework.test.ts -t "passes reviewMaxTurns"`
-Expected: FAIL — today it passes `options.maxTurns` for reviewers.
-
-- [ ] **Step 5: Implement the routing change**
+- [ ] **Step 3: Implement the routing change**
 
 Edit `src/commands/run.ts` at each of the three reviewer-adjacent `runSession` calls. In the reviewer closure (around line 590–600):
 
@@ -618,7 +543,7 @@ describe("OpenCodeDriver — maxTurns enforcement", () => {
     expect(result.numTurns).toBe(2);
   });
 
-  it("aborts and returns error signal when maxTurns is reached", async () => {
+  it("aborts and returns none signal when maxTurns is reached", async () => {
     const driver = new OpenCodeDriver();
     const client = makeMockClient(() =>
       sseFromArray([stepFinish(), stepFinish(), stepFinish(), idle()]),
@@ -627,11 +552,27 @@ describe("OpenCodeDriver — maxTurns enforcement", () => {
 
     const result = await driver.runSession({ ...baseOpts, maxTurns: 2 });
 
+    expect(client._abortSpy).toHaveBeenCalledTimes(1);
     expect(client._abortSpy).toHaveBeenCalledWith({ sessionID: "s1" });
-    expect(result.signal.type).toBe("error");
-    expect(result.signal.type === "error" && result.signal.message).toMatch(
-      /Max turns exceeded \(2\)/,
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(2\)/);
+    // Metrics must be preserved (non-zero)
+    expect(result.numTurns).toBeGreaterThanOrEqual(2);
+    expect(result.inputTokens).toBeGreaterThan(0);
+  });
+
+  it("ignores post-abort events (no double abort, no counter drift)", async () => {
+    const driver = new OpenCodeDriver();
+    // 5 step-finish events, maxTurns=2 — after abort, events 3/4/5 must be ignored
+    const client = makeMockClient(() =>
+      sseFromArray([stepFinish(), stepFinish(), stepFinish(), stepFinish(), stepFinish(), idle()]),
     );
+    (driver as unknown as { client: unknown }).client = client;
+
+    const result = await driver.runSession({ ...baseOpts, maxTurns: 2 });
+
+    expect(client._abortSpy).toHaveBeenCalledTimes(1);
+    expect(result.numTurns).toBe(2);
   });
 
   it("treats maxTurns === 0 as unlimited", async () => {
@@ -652,20 +593,24 @@ describe("OpenCodeDriver — maxTurns enforcement", () => {
 Run: `npx vitest run src/__tests__/opencode-max-turns.test.ts`
 Expected: FAIL — abort is never called; error signal never emitted on breach.
 
-- [ ] **Step 3: Add `maxTurns` to `OpenCodeContext` and `createContext`**
+- [ ] **Step 3: Add `maxTurns`, `aborted`, `maxTurnsExceeded` to `OpenCodeContext` and `createContext`**
 
-Edit `src/core/drivers/opencode.ts`. In the `OpenCodeContext` interface (around line 77), add the field right after `cwd`:
+Edit `src/core/drivers/opencode.ts`. In the `OpenCodeContext` interface (around line 77), add three fields:
 
 ```typescript
 interface OpenCodeContext {
   logger: SessionLogger;
   cwd: string;
   maxTurns: number;
+  /** Set once we have sent session.abort — subsequent SSE events must be ignored. */
+  aborted: boolean;
+  /** True when abort reason was maxTurns breach — result is built with signal: none + marker. */
+  maxTurnsExceeded: boolean;
   // ... existing fields unchanged
 }
 ```
 
-In `createContext()` (around line 1062), populate the field:
+In `createContext()` (around line 1062), populate the new fields:
 
 ```typescript
 private createContext(opts: SessionOptions): OpenCodeContext {
@@ -673,14 +618,26 @@ private createContext(opts: SessionOptions): OpenCodeContext {
     logger: new SessionLogger(opts.verbosity, opts.onLog),
     cwd: opts.cwd,
     maxTurns: opts.maxTurns,
+    aborted: false,
+    maxTurnsExceeded: false,
     // ... existing fields unchanged
   };
 }
 ```
 
-- [ ] **Step 4: Enforce the limit in `handleStepFinish`**
+- [ ] **Step 4: Guard handlers against post-abort events**
 
-In `handleStepFinish` (around line 1355), after the `ctx.numTurns++;` line (currently line 1370), insert the limit check **before** the verbose logging block:
+Add at the very top of `handleStepFinish`, `handleToolPart`, and `handleTextPart`:
+
+```typescript
+if (ctx.aborted) return;
+```
+
+This prevents the SSE stream from continuing to accumulate counters or re-trigger abort while our `session.abort()` HTTP call is in flight.
+
+- [ ] **Step 5: Enforce the limit in `handleStepFinish`**
+
+In `handleStepFinish` (around line 1355), after metric accumulation and before verbose logging, insert the limit check:
 
 ```typescript
   ctx.numTurns++;
@@ -691,23 +648,52 @@ In `handleStepFinish` (around line 1355), after the `ctx.numTurns++;` line (curr
   ctx.cacheWriteTokens += sfp.tokens.cache.write;
   ctx.costUsd += sfp.cost;
 
-  // Enforce maxTurns — abort the OpenCode session and surface an error result.
-  // `this.client` and `ctx.sessionId` are guaranteed non-null inside runSession's loop.
-  if (ctx.maxTurns && ctx.numTurns >= ctx.maxTurns && !ctx.errorResult) {
+  // Enforce maxTurns: abort session, mark context, suppress the N/N turn-count emission below.
+  if (ctx.maxTurns && ctx.numTurns >= ctx.maxTurns && !ctx.aborted) {
+    ctx.aborted = true;
+    ctx.maxTurnsExceeded = true;
     this.client?.session
       .abort({ sessionID: ctx.sessionId! })
       .catch(() => {});
-    ctx.errorResult = errorResult(
-      `Max turns exceeded (${ctx.maxTurns})`,
-    );
+    // Do NOT emit agent:turn_count here — a terminal N/N blip is misleading; the next
+    // runSession-level retry will reset the counter cleanly.
+    return;
   }
 
   if (ctx.logger.isVerbose) {
     // ... existing verbose logging
   }
+
+  // emit agent:turn_count (only reached when not aborting)
+  ctx.logger.sendToLog({
+    type: "agent:turn_count",
+    numTurns: ctx.numTurns,
+    maxTurns: ctx.maxTurns,
+    model: ctx.model,
+    unitId: ctx.unitId,
+  });
 ```
 
-Note: `errorResult` is the existing private helper at the bottom of the file (line 1515). It is already imported in the module scope.
+- [ ] **Step 6: Build the result with preserved metrics and `signal: none` on breach**
+
+In `runSession` (around line 440, after the `for await` loop), replace the final result-building logic. When `ctx.maxTurnsExceeded` is set:
+
+```typescript
+if (ctx.maxTurnsExceeded) {
+  const marker = `Max turns exceeded (${ctx.maxTurns})`;
+  console.error(`  !!! ${marker} — retrying !!!`);
+  const sseText = Array.from(ctx.textPartAccumulator.values()).join("\n");
+  const finalText = sseText || ctx.resultText;
+  return this.buildIterationResult(
+    { ...ctx, resultText: `${marker}\n${finalText}` },
+    { type: "none" },
+    null,
+    null,
+  );
+}
+```
+
+Do **not** call `errorResult(...)` in this path — it zeros all metrics. The existing `buildIterationResult(ctx, signal, report, reviewReport)` already reads accumulated metrics from `ctx`.
 
 - [ ] **Step 5: Run test to verify it passes**
 
@@ -738,32 +724,39 @@ git commit -m "opencode: enforce maxTurns by aborting session on step-finish bre
 
 Create `src/__tests__/codex-max-turns.test.ts`:
 
+Use the hoisted `vi.mock()` pattern (ESM-compatible):
+
 ```typescript
 import { describe, it, expect, vi } from "vitest";
 
 /**
- * The Codex driver owns AbortController-driven cancellation. We cannot stub
- * the SDK without heavy mocking, so we construct a mock Thread whose
- * runStreamed yields a controlled event sequence and asserts behavior
- * depending on maxTurns.
+ * Vitest ESM-compatible pattern: vi.mock is hoisted and must declare its factory
+ * before any imports of the mocked module. We expose a setter so each test can
+ * swap the event stream.
  */
 
-function mockThread(events: AsyncIterable<unknown>) {
-  return {
-    runStreamed: vi.fn().mockImplementation(async () => ({ events })),
-  };
-}
+let mockEvents: AsyncIterable<unknown> = (async function* () {})();
 
-function mockCodex(thread: ReturnType<typeof mockThread>) {
-  return { startThread: vi.fn().mockReturnValue(thread) };
-}
+vi.mock("@openai/codex-sdk", () => {
+  return {
+    Codex: vi.fn().mockImplementation(() => ({
+      startThread: vi.fn().mockReturnValue({
+        runStreamed: vi.fn().mockImplementation(async () => ({ events: mockEvents })),
+      }),
+    })),
+  };
+});
+
+import { CodexDriver } from "../core/drivers/codex.js";
+import { MaxTurnsExceededError } from "../core/drivers/types.js";
 
 async function* seqAsync<T>(items: T[]): AsyncIterable<T> {
   for (const i of items) yield i;
 }
 
-// Minimal events factory
-const threadStarted = { type: "thread.started", thread_id: "t1" };
+function threadStarted() {
+  return { type: "thread.started", thread_id: "t1" };
+}
 function toolStartedCmd() {
   return { type: "item.started", item: { type: "command_execution", command: "echo" } };
 }
@@ -784,17 +777,6 @@ function turnCompleted() {
 }
 
 describe("CodexDriver — maxTurns enforcement", () => {
-  async function makeDriver(events: unknown[]) {
-    vi.resetModules();
-    const thread = mockThread(seqAsync(events));
-    const codex = mockCodex(thread);
-    vi.doMock("@openai/codex-sdk", () => ({
-      Codex: vi.fn().mockImplementation(() => codex),
-    }));
-    const { CodexDriver } = await import("../core/drivers/codex.js");
-    return { driver: new CodexDriver("gpt-5.4"), thread, codex };
-  }
-
   const baseOpts = {
     prompt: "t",
     systemPrompt: "s",
@@ -804,8 +786,8 @@ describe("CodexDriver — maxTurns enforcement", () => {
   };
 
   it("counts only tool-call items, not reasoning or agent messages", async () => {
-    const { driver } = await makeDriver([
-      thread_started_like(),
+    mockEvents = seqAsync([
+      threadStarted(),
       reasoning(),
       agentMessage("text"),
       toolStartedCmd(),
@@ -814,56 +796,55 @@ describe("CodexDriver — maxTurns enforcement", () => {
       toolCompletedCmd(),
       turnCompleted(),
     ]);
-
+    const driver = new CodexDriver("gpt-5.4");
     const result = await driver.runSession({ ...baseOpts, maxTurns: 10 });
     expect(result.signal.type).not.toBe("error");
     expect(result.numTurns).toBe(2);
   });
 
-  it("aborts and returns Max-turns-exceeded error when limit reached", async () => {
+  it("aborts and returns signal:none with marker when limit reached", async () => {
     const ac = new AbortController();
-    const { driver } = await makeDriver([
-      thread_started_like(),
+    mockEvents = seqAsync([
+      threadStarted(),
       toolStartedCmd(),
       toolCompletedCmd(),
       toolStartedCmd(),
       toolCompletedCmd(),
+      // would-be 3rd tool call — should never be counted because loop breaks
       toolStartedCmd(),
       toolCompletedCmd(),
       turnCompleted(),
     ]);
-
+    const driver = new CodexDriver("gpt-5.4");
     const result = await driver.runSession({
       ...baseOpts,
       maxTurns: 2,
       abortController: ac,
     });
-    expect(result.signal.type).toBe("error");
-    expect(
-      result.signal.type === "error" && result.signal.message,
-    ).toMatch(/Max turns exceeded \(2\)/);
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(2\)/);
+    expect(result.numTurns).toBe(2); // NOT 3 — loop broke before 3rd increment
     expect(ac.signal.aborted).toBe(true);
+    expect(ac.signal.reason).toBeInstanceOf(MaxTurnsExceededError);
   });
 
-  it("preserves existing behavior when an external AbortController fires", async () => {
+  it("external AbortController abort with non-maxTurns reason keeps error path", async () => {
     const ac = new AbortController();
     ac.abort(new Error("user cancelled"));
-    const { driver } = await makeDriver([thread_started_like(), turnCompleted()]);
+    mockEvents = seqAsync([threadStarted(), turnCompleted()]);
+    const driver = new CodexDriver("gpt-5.4");
     const result = await driver.runSession({
       ...baseOpts,
       maxTurns: 10,
       abortController: ac,
     });
+    // External abort → standard error path (not maxTurns)
     expect(result.signal.type).toBe("error");
     expect(
       result.signal.type === "error" && result.signal.message,
     ).not.toMatch(/Max turns exceeded/);
   });
 });
-
-function thread_started_like() {
-  return { type: "thread.started", thread_id: "t1" };
-}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -875,6 +856,25 @@ Expected: FAIL — driver neither counts tool calls nor aborts on limit.
 
 Edit `src/core/drivers/codex.ts` inside `runSession()` (around line 147). Add a local counter and a named error class before the `try` block:
 
+First, add the shared error class in `src/core/drivers/types.ts`:
+
+```typescript
+export class MaxTurnsExceededError extends Error {
+  constructor(public readonly maxTurns: number) {
+    super(`Max turns exceeded (${maxTurns})`);
+    this.name = "MaxTurnsExceeded";
+  }
+}
+```
+
+Import it at the top of `src/core/drivers/codex.ts`:
+
+```typescript
+import { parseSignal, parseReport, parseReviewReport, MaxTurnsExceededError } from "./types.js";
+```
+
+Then edit `runSession`. Add a local counter and a guard flag before the `try` block:
+
 ```typescript
 async runSession(opts: SessionOptions): Promise<IterationResult> {
   const startTime = Date.now();
@@ -882,7 +882,7 @@ async runSession(opts: SessionOptions): Promise<IterationResult> {
 
   const codex = new Codex();
   const thread = codex.startThread({
-    // ... existing options
+    // ... existing options unchanged
   });
 
   const fullPrompt = opts.systemPrompt
@@ -895,11 +895,19 @@ async runSession(opts: SessionOptions): Promise<IterationResult> {
   let usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } | null = null;
   let threadId: string | null = null;
   let toolCalls = 0;
-  const maxTurnsExceededSentinel = Symbol("MaxTurnsExceeded");
   let maxTurnsExceeded = false;
 ```
 
-Inside the event loop, in the `"item.completed"` case, increment on tool-call items:
+Inside the event loop, **add a guard at the top** (prevents post-abort events from being processed):
+
+```typescript
+for await (const event of streamedTurn.events) {
+  if (maxTurnsExceeded) break; // stop immediately after limit decision
+  switch (event.type) {
+    // ... existing cases
+```
+
+In the `"item.completed"` case, increment counter on tool-call items, emit turn_count, enforce limit, and break out synchronously:
 
 ```typescript
 case "item.completed": {
@@ -911,11 +919,24 @@ case "item.completed": {
     item.type === "web_search"
   ) {
     toolCalls++;
+    logger.sendToLog({
+      type: "agent:turn_count",
+      numTurns: toolCalls,
+      maxTurns: opts.maxTurns ?? 0,
+      model: modelName,
+      unitId: opts.unitId,
+    });
     if (opts.maxTurns && toolCalls >= opts.maxTurns && !maxTurnsExceeded) {
       maxTurnsExceeded = true;
-      const err = new Error(`Max turns exceeded (${opts.maxTurns})`);
-      (err as Error & { _prorabMaxTurns?: symbol })._prorabMaxTurns = maxTurnsExceededSentinel;
-      opts.abortController?.abort(err);
+      const err = new MaxTurnsExceededError(opts.maxTurns);
+      if (opts.abortController) {
+        opts.abortController.abort(err);
+      }
+      // Break out of the for-await synchronously; don't wait for SDK ack.
+      // Using a labeled break requires a label, so we rely on the top-of-loop
+      // guard instead — the next iteration's `if (maxTurnsExceeded) break;`
+      // catches it. Falling through is safe because further processing
+      // within this case is idempotent (logger calls accept our counter).
     }
   }
   // ... existing logging / context-usage updates (unchanged) ...
@@ -923,26 +944,40 @@ case "item.completed": {
 }
 ```
 
-In the `catch` block (around line 252), distinguish the max-turns abort from ordinary errors:
+**After the `for await` loop and before the `catch` block**, handle the max-turns outcome with preserved metrics:
 
 ```typescript
-} catch (err: unknown) {
-  let message = err instanceof Error ? err.message : String(err);
-  // If we aborted due to our own max-turns limit, surface the reason.
-  if (
-    maxTurnsExceeded ||
-    (opts.abortController?.signal.aborted &&
-      (opts.abortController.signal.reason as { _prorabMaxTurns?: symbol })?._prorabMaxTurns ===
-        maxTurnsExceededSentinel)
-  ) {
-    message = `Max turns exceeded (${opts.maxTurns})`;
+  } // end for-await
+
+  if (maxTurnsExceeded) {
+    const marker = `Max turns exceeded (${opts.maxTurns})`;
+    console.error(`  !!! ${marker} — retrying !!!`);
+    return {
+      signal: { type: "none" },
+      durationMs: Date.now() - startTime,
+      costUsd: 0,
+      numTurns: Math.max(1, toolCalls),
+      resultText: `${marker}\n${resultText}`,
+      inputTokens: usage?.input_tokens ?? 0,
+      outputTokens: usage?.output_tokens ?? 0,
+      cacheReadTokens: usage?.cached_input_tokens ?? 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      model: modelName,
+      agentReport: null,
+      reviewReport: null,
+      startedAt: "",
+      finishedAt: "",
+    };
   }
+} catch (err: unknown) {
+  // External abort or SDK error — do NOT treat as maxTurns (that path returned above)
+  const message = err instanceof Error ? err.message : String(err);
   return {
     signal: { type: "error", message },
     durationMs: Date.now() - startTime,
     costUsd: 0,
-    numTurns: Math.max(1, toolCalls),
-    // ... existing fields, keep zeros
+    numTurns: Math.max(0, toolCalls), // 0 if nothing happened
     resultText: "",
     inputTokens: 0,
     outputTokens: 0,
@@ -958,7 +993,7 @@ In the `catch` block (around line 252), distinguish the max-turns abort from ord
 }
 ```
 
-At the bottom of the method, replace the hardcoded `numTurns: 1` with the real count:
+At the bottom of the method (success path), replace the hardcoded `numTurns: 1`:
 
 ```typescript
 return {
@@ -1055,32 +1090,103 @@ if (
 
 This merges Task 6's counter increment with the emission: keep the abort logic (Task 6) and the emission together inside the tool-call branch.
 
-- [ ] **Step 4: Emit from `ClaudeDriver`**
+- [ ] **Step 4: Emit from `ClaudeDriver` — add local counter, emit per assistant message, only in `runSession`**
 
-In `src/core/drivers/claude.ts` find where each assistant message is processed (search for `numTurns` or `assistant` events; Claude SDK yields typed messages in a loop inside `runSession`). After each assistant-message handler that increments the driver's internal turn counter (or where `numTurns` is tracked), emit:
+The Claude Agent SDK does not expose incremental `num_turns` during streaming — only the final value in the `result` message. For a live UI indicator we maintain our own counter in `ClaudeContext`.
+
+In `src/core/drivers/claude.ts`:
+
+1. Locate `ClaudeContext` interface (grep for `interface ClaudeContext`). Add three fields:
 
 ```typescript
-ctx.logger.sendToLog({
-  type: "agent:turn_count",
-  numTurns: ctx.numTurns,
+interface ClaudeContext {
+  // ... existing fields
+  maxTurns: number;
+  unitId: string;
+  numApiCalls: number;
+}
+```
+
+2. In `createContext()` (the helper that builds `ClaudeContext` for `runSession`), populate:
+
+```typescript
+return {
+  // ... existing fields
   maxTurns: opts.maxTurns,
-  model: ctx.model,
   unitId: opts.unitId,
+  numApiCalls: 0,
+};
+```
+
+3. In `handleAssistant` (the method called once per SDK `assistant` message in `runSession`), increment and emit at the top of the method:
+
+```typescript
+private handleAssistant(msg: SDKAssistantMessage, ctx: ClaudeContext): void {
+  ctx.numApiCalls++;
+  ctx.logger.sendToLog({
+    type: "agent:turn_count",
+    numTurns: ctx.numApiCalls,
+    maxTurns: ctx.maxTurns,
+    model: ctx.model,
+    unitId: ctx.unitId,
+  });
+  // ... existing body unchanged
+}
+```
+
+4. **Do NOT add this emission to `startChat`.** Chat sessions do not render the turns indicator and do not pass a `maxTurns`. The chat context is a separate data structure; only the `runSession` context gets the new fields.
+
+- [ ] **Step 5: Create `src/__tests__/claude-turn-count.test.ts`**
+
+```typescript
+import { describe, it, expect, vi } from "vitest";
+// Mock the Claude SDK to yield a controlled assistant-message sequence.
+// Pattern: hoisted vi.mock, then import ClaudeDriver.
+// ...
+
+it("emits agent:turn_count for each assistant message with maxTurns and unitId", async () => {
+  const events: unknown[] = [];
+  const driver = new ClaudeDriver();
+  // wire mocked SDK to yield 3 assistant messages then result
+  const result = await driver.runSession({
+    prompt: "p", systemPrompt: "s", cwd: "/tmp",
+    maxTurns: 50, verbosity: "quiet", unitId: "u1",
+    onLog: (e) => events.push(e),
+  });
+  const turnCountEvents = events.filter(
+    (e): e is { type: string; numTurns: number; maxTurns: number; unitId: string } =>
+      (e as { type?: string }).type === "agent:turn_count",
+  );
+  expect(turnCountEvents.map((e) => e.numTurns)).toEqual([1, 2, 3]);
+  expect(turnCountEvents.every((e) => e.maxTurns === 50)).toBe(true);
+  expect(turnCountEvents.every((e) => e.unitId === "u1")).toBe(true);
+});
+
+it("does NOT emit agent:turn_count during startChat", async () => {
+  const events: unknown[] = [];
+  const driver = new ClaudeDriver();
+  const stream = driver.startChat({
+    cwd: "/tmp", verbosity: "quiet",
+    onLog: (e) => events.push(e),
+  });
+  driver.sendMessage("hi");
+  for await (const ev of stream) {
+    if (ev.type === "idle") break;
+  }
+  expect(events.some((e) => (e as { type?: string }).type === "agent:turn_count")).toBe(false);
 });
 ```
 
-If Claude's loop doesn't maintain its own counter, increment one locally on each `assistant` message before the emission. Verify by running the existing Claude tests afterward (Step 7).
-
-- [ ] **Step 5: Run all driver tests**
+- [ ] **Step 6: Run all driver tests**
 
 Run: `npx vitest run src/__tests__/opencode-*.test.ts src/__tests__/codex-*.test.ts src/__tests__/claude-*.test.ts`
-Expected: All tests pass. If `opencode-verbose-output.test.ts` or similar snapshot tests capture the event stream, the new `agent:turn_count` event will show up — update the fixture/snapshot as part of this task.
+Expected: All pass. If `opencode-verbose-output.test.ts` or similar snapshot tests capture the event stream, the new `agent:turn_count` event will show up — update the fixture/snapshot.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/types.ts src/core/drivers/opencode.ts src/core/drivers/codex.ts src/core/drivers/claude.ts src/__tests__/
-git commit -m "drivers: emit agent:turn_count event for live UI indicator"
+git add src/types.ts src/core/drivers/types.ts src/core/drivers/opencode.ts src/core/drivers/codex.ts src/core/drivers/claude.ts src/__tests__/
+git commit -m "drivers: emit agent:turn_count for live UI indicator (runSession only)"
 ```
 
 ---
@@ -1156,7 +1262,7 @@ const turnUsage = computed(() => {
 });
 ```
 
-Next to `updateContextUsage` (around line 192), add:
+Next to `updateContextUsage` (around line 192), add two actions:
 
 ```typescript
 function updateTurnUsage(data: { numTurns: number; maxTurns: number; model: string; unitId: string; reviewerId?: string }) {
@@ -1166,6 +1272,22 @@ function updateTurnUsage(data: { numTurns: number; maxTurns: number; model: stri
     maxTurns: data.maxTurns,
     model: data.model,
   };
+}
+
+function clearTurnUsage(scope?: { unitId?: string; reviewerId?: string }) {
+  if (!scope) {
+    turnUsageByUnit.value = {};
+    return;
+  }
+  if (scope.unitId && scope.reviewerId) {
+    delete turnUsageByUnit.value[`${scope.unitId}:${scope.reviewerId}`];
+  } else if (scope.unitId) {
+    delete turnUsageByUnit.value[scope.unitId];
+    // also clear per-reviewer entries for this unit
+    for (const key of Object.keys(turnUsageByUnit.value)) {
+      if (key.startsWith(`${scope.unitId}:`)) delete turnUsageByUnit.value[key];
+    }
+  }
 }
 ```
 
@@ -1198,10 +1320,12 @@ return {
   iterationCurrent, iterationTotal, gracefulStop,
   startExecution, stopExecution, addEvent, clearEvents, fetchModels,
   fetchTaskContext, clearTaskContext,
-  updateContextUsage, updateTurnUsage,
+  updateContextUsage, updateTurnUsage, clearTurnUsage,
   // ... rest unchanged
 };
 ```
+
+**Phase-transition resets.** `turnUsageByUnit` must also be cleared wherever `contextUsageByUnit` is cleared today (search `contextUsageByUnit.value = {}` across the store and composables). The `startExecution` reset above covers run start; other lifecycle events (`execution:multi_review_started`, `execution:reviewer_finished`, `execution:all_done`) are handled either directly in the store (if a helper already exists) or in `useWebSocket.ts` (Task 9).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1226,9 +1350,9 @@ git commit -m "ui/store: add reviewMaxTurns + turnUsageByUnit state"
 
 Run: `grep -n "agent:context_usage" ui/src/composables/useWebSocket.ts`
 
-- [ ] **Step 2: Add the turn-count handler next to it**
+- [ ] **Step 2: Add the turn-count handler + phase-transition resets**
 
-Add a case mirroring the context-usage one:
+Add a case mirroring the context-usage one. Also find places where `contextUsageByUnit` is cleared on lifecycle events and mirror them for `turnUsageByUnit`.
 
 ```typescript
 case "agent:context_usage":
@@ -1251,16 +1375,40 @@ case "agent:turn_count":
   break;
 ```
 
-- [ ] **Step 3: Type-check**
+For phase transitions: any place that currently clears `contextUsageByUnit` (e.g. on `execution:multi_review_started`, `execution:all_done`) must also call `execStore.clearTurnUsage(...)` with the same scope. Search `contextUsageByUnit` in `useWebSocket.ts` and the store; mirror each clear site.
+
+- [ ] **Step 3: Extend `ws-channel-routing.test.ts`**
+
+Add a case verifying that an `agent:turn_count` event without explicit `channel` is routed to the `"execute"` channel by `applyDefaultChannel()`, like other `agent:*` events. Follow the pattern already used for `agent:context_usage` in that file:
+
+```typescript
+it("applies default 'execute' channel to agent:turn_count", () => {
+  const event = { type: "agent:turn_count", numTurns: 5, maxTurns: 100, model: "m", unitId: "u1" };
+  expect(applyDefaultChannel(event).channel).toBe("execute");
+});
+
+it("preserves reviewerId on agent:turn_count", () => {
+  const event = {
+    type: "agent:turn_count", numTurns: 3, maxTurns: 100, model: "m", unitId: "u1",
+    reviewerId: "r1",
+  };
+  expect(applyDefaultChannel(event).reviewerId).toBe("r1");
+});
+```
+
+- [ ] **Step 4: Type-check and run tests**
 
 Run: `npx vue-tsc --noEmit --project ui/tsconfig.json`
 Expected: No errors.
 
-- [ ] **Step 4: Commit**
+Run: `npx vitest run src/__tests__/ws-channel-routing.test.ts`
+Expected: All tests pass, including the two new cases.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add ui/src/composables/useWebSocket.ts
-git commit -m "ui/ws: route agent:turn_count event to execution store"
+git add ui/src/composables/useWebSocket.ts src/__tests__/ws-channel-routing.test.ts
+git commit -m "ui/ws: route agent:turn_count, reset turnUsage on phase transitions"
 ```
 
 ---
@@ -1281,7 +1429,18 @@ const reviewMaxTurns = usePersistedRef("prorab:reviewMaxTurns", 100);
 
 - [ ] **Step 2: Send `reviewMaxTurns` in the `startExecution` payload**
 
-Around line 355, where `maxTurns: maxTurns.value` is set, add:
+First, update the `startExecution` options interface in `ui/src/stores/execution.ts` (around line 62) to include the field:
+
+```typescript
+async function startExecution(options: {
+  // ... existing fields
+  maxTurns?: number;
+  reviewMaxTurns?: number;
+  // ... existing fields
+}) {
+```
+
+Then in `ExecutionView.vue` around line 355, where `maxTurns: maxTurns.value` is set, add the new field:
 
 ```typescript
 maxTurns: maxTurns.value,
@@ -1396,7 +1555,8 @@ Expected: `--max-turns <number>` (default 200) and `--review-max-turns <number>`
 
 Start `prorab serve` in a test project, launch an execution with `Review enabled`, a small `Review max turns` (e.g. 3), and an OpenCode reviewer model. Observe:
 - `Turns n / N` indicator increments live.
-- Once 3 tool-calls/steps happen, the reviewer session aborts with an "error" signal in the log and the standard retry kicks in.
+- Once 3 tool-calls/steps happen, the reviewer session aborts, log shows `"Max turns exceeded (3) — retrying"`, and the next attempt starts (up to `--max-retries`).
+- After retries exhausted, the task commit log records the failure via the standard max-retries path.
 
 Document the smoke result inline (paste log tail under this step).
 
