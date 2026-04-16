@@ -113,6 +113,48 @@ describe("CodexDriver — maxTurns enforcement", () => {
     expect(ac.signal.reason).toBeInstanceOf(MaxTurnsExceededError);
   });
 
+  it("treats maxTurns === 0 as unlimited", async () => {
+    mockThread.runStreamed.mockResolvedValue({
+      events: eventsFrom([
+        threadStarted(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        turnCompleted(),
+      ]),
+    });
+    const driver = new CodexDriver();
+    const result = await driver.runSession(makeOpts({ maxTurns: 0 }));
+    expect(result.signal.type).not.toBe("error");
+    expect(result.resultText).not.toMatch(/Max turns exceeded/);
+    expect(result.numTurns).toBe(3);
+  });
+
+  it("breaches without abortController — top-of-loop guard exits the for-await", async () => {
+    mockThread.runStreamed.mockResolvedValue({
+      events: eventsFrom([
+        threadStarted(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        // 3rd tool call — guard must break loop before counting it,
+        // even without an abortController to abort.
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        turnCompleted(),
+      ]),
+    });
+    const driver = new CodexDriver();
+    const result = await driver.runSession(makeOpts({ maxTurns: 2 }));
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(2\)/);
+    expect(result.numTurns).toBe(2);
+  });
+
   it("external AbortController abort with non-maxTurns reason keeps error path", async () => {
     const ac = new AbortController();
     ac.abort(new Error("user cancelled"));

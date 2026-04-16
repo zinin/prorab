@@ -144,6 +144,40 @@ export class CodexDriver implements AgentDriver {
     return null;
   }
 
+  /**
+   * Build the IterationResult returned when maxTurns is breached. Both the
+   * in-loop breach branch and the MaxTurnsExceededError catch branch share
+   * this single source of truth.
+   */
+  private buildMaxTurnsResult(params: {
+    maxTurns: number;
+    startTime: number;
+    toolCalls: number;
+    resultText: string;
+    usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } | null;
+    modelName: string;
+  }): IterationResult {
+    const marker = `Max turns exceeded (${params.maxTurns})`;
+    console.error(`  !!! ${marker} — retrying !!!`);
+    return {
+      signal: { type: "none" },
+      durationMs: Date.now() - params.startTime,
+      costUsd: 0,
+      numTurns: Math.max(1, params.toolCalls),
+      resultText: `${marker}\n${params.resultText}`,
+      inputTokens: params.usage?.input_tokens ?? 0,
+      outputTokens: params.usage?.output_tokens ?? 0,
+      cacheReadTokens: params.usage?.cached_input_tokens ?? 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      model: params.modelName,
+      agentReport: null,
+      reviewReport: null,
+      startedAt: "",
+      finishedAt: "",
+    };
+  }
+
   async runSession(opts: SessionOptions): Promise<IterationResult> {
     const startTime = Date.now();
     const modelName = this.model ?? DEFAULT_CODEX_MODEL;
@@ -272,49 +306,27 @@ export class CodexDriver implements AgentDriver {
       }
 
       if (maxTurnsExceeded) {
-        const marker = `Max turns exceeded (${opts.maxTurns})`;
-        console.error(`  !!! ${marker} — retrying !!!`);
-        return {
-          signal: { type: "none" },
-          durationMs: Date.now() - startTime,
-          costUsd: 0,
-          numTurns: Math.max(1, toolCalls),
-          resultText: `${marker}\n${resultText}`,
-          inputTokens: usage?.input_tokens ?? 0,
-          outputTokens: usage?.output_tokens ?? 0,
-          cacheReadTokens: usage?.cached_input_tokens ?? 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-          model: modelName,
-          agentReport: null,
-          reviewReport: null,
-          startedAt: "",
-          finishedAt: "",
-        };
+        return this.buildMaxTurnsResult({
+          maxTurns: opts.maxTurns!,
+          startTime,
+          toolCalls,
+          resultText,
+          usage,
+          modelName,
+        });
       }
     } catch (err: unknown) {
       if (err instanceof MaxTurnsExceededError) {
         // Fallback path: should normally be caught by the maxTurnsExceeded
         // branch above, but the SDK may surface our abort as a thrown error.
-        const marker = `Max turns exceeded (${opts.maxTurns})`;
-        console.error(`  !!! ${marker} — retrying !!!`);
-        return {
-          signal: { type: "none" },
-          durationMs: Date.now() - startTime,
-          costUsd: 0,
-          numTurns: Math.max(1, toolCalls),
-          resultText: `${marker}\n${resultText}`,
-          inputTokens: usage?.input_tokens ?? 0,
-          outputTokens: usage?.output_tokens ?? 0,
-          cacheReadTokens: usage?.cached_input_tokens ?? 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-          model: modelName,
-          agentReport: null,
-          reviewReport: null,
-          startedAt: "",
-          finishedAt: "",
-        };
+        return this.buildMaxTurnsResult({
+          maxTurns: opts.maxTurns!,
+          startTime,
+          toolCalls,
+          resultText,
+          usage,
+          modelName,
+        });
       }
       const message = err instanceof Error ? err.message : String(err);
       return {
