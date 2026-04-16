@@ -11,7 +11,7 @@ import type {
   QuestionAnswers,
   SessionOptions,
 } from "./types.js";
-import { parseSignal, parseReport, parseReviewReport } from "./types.js";
+import { parseSignal, parseReport, parseReviewReport, MaxTurnsExceededError } from "./types.js";
 import { SessionLogger } from "./logging.js";
 import { setContextWindow } from "./context-window.js";
 import { AsyncQueue } from "./async-queue.js";
@@ -169,6 +169,8 @@ export class CodexDriver implements AgentDriver {
     let resultText = "";
     let usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } | null = null;
     let threadId: string | null = null;
+    let toolCalls = 0;
+    let maxTurnsExceeded = false;
 
     try {
       const streamedTurn = await thread.runStreamed(fullPrompt, {
@@ -176,6 +178,7 @@ export class CodexDriver implements AgentDriver {
       });
 
       for await (const event of streamedTurn.events) {
+        if (maxTurnsExceeded) break;
         switch (event.type) {
           case "thread.started":
             threadId = (event as { thread_id: string }).thread_id;
@@ -205,6 +208,24 @@ export class CodexDriver implements AgentDriver {
           }
           case "item.completed": {
             const item = event.item;
+            // Tool-call accounting: only actual tool invocations count toward
+            // maxTurns. agent_message/reasoning/error items are excluded.
+            if (
+              item.type === "command_execution" ||
+              item.type === "file_change" ||
+              item.type === "mcp_tool_call" ||
+              item.type === "web_search"
+            ) {
+              toolCalls++;
+              if (opts.maxTurns && toolCalls >= opts.maxTurns && !maxTurnsExceeded) {
+                maxTurnsExceeded = true;
+                const err = new MaxTurnsExceededError(opts.maxTurns);
+                if (opts.abortController) {
+                  opts.abortController.abort(err);
+                }
+                break; // exit switch; top-of-loop guard exits for-await
+              }
+            }
             if (item.type === "agent_message") {
               resultText += item.text;
               logger.logAssistant(item.text);
@@ -249,13 +270,58 @@ export class CodexDriver implements AgentDriver {
             throw new Error(event.message);
         }
       }
+
+      if (maxTurnsExceeded) {
+        const marker = `Max turns exceeded (${opts.maxTurns})`;
+        console.error(`  !!! ${marker} — retrying !!!`);
+        return {
+          signal: { type: "none" },
+          durationMs: Date.now() - startTime,
+          costUsd: 0,
+          numTurns: Math.max(1, toolCalls),
+          resultText: `${marker}\n${resultText}`,
+          inputTokens: usage?.input_tokens ?? 0,
+          outputTokens: usage?.output_tokens ?? 0,
+          cacheReadTokens: usage?.cached_input_tokens ?? 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          model: modelName,
+          agentReport: null,
+          reviewReport: null,
+          startedAt: "",
+          finishedAt: "",
+        };
+      }
     } catch (err: unknown) {
+      if (err instanceof MaxTurnsExceededError) {
+        // Fallback path: should normally be caught by the maxTurnsExceeded
+        // branch above, but the SDK may surface our abort as a thrown error.
+        const marker = `Max turns exceeded (${opts.maxTurns})`;
+        console.error(`  !!! ${marker} — retrying !!!`);
+        return {
+          signal: { type: "none" },
+          durationMs: Date.now() - startTime,
+          costUsd: 0,
+          numTurns: Math.max(1, toolCalls),
+          resultText: `${marker}\n${resultText}`,
+          inputTokens: usage?.input_tokens ?? 0,
+          outputTokens: usage?.output_tokens ?? 0,
+          cacheReadTokens: usage?.cached_input_tokens ?? 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          model: modelName,
+          agentReport: null,
+          reviewReport: null,
+          startedAt: "",
+          finishedAt: "",
+        };
+      }
       const message = err instanceof Error ? err.message : String(err);
       return {
         signal: { type: "error", message },
         durationMs: Date.now() - startTime,
         costUsd: 0,
-        numTurns: 0,
+        numTurns: Math.max(0, toolCalls),
         resultText: "",
         inputTokens: 0,
         outputTokens: 0,
@@ -278,7 +344,7 @@ export class CodexDriver implements AgentDriver {
       signal,
       durationMs: Date.now() - startTime,
       costUsd: 0,
-      numTurns: 1,
+      numTurns: Math.max(1, toolCalls),
       resultText,
       inputTokens: usage?.input_tokens ?? 0,
       outputTokens: usage?.output_tokens ?? 0,
