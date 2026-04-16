@@ -271,6 +271,8 @@ export function useWebSocket() {
         case "execution:all_done":
           execStore.state = "idle";
           execStore.currentUnit = null;
+          execStore.contextUsageByUnit = {};
+          execStore.turnUsageByUnit = {};
           execStore.clearIterationInfo();
           execStore.gracefulStop = false;
           break;
@@ -333,9 +335,15 @@ export function useWebSocket() {
           }
           break;
         }
-        case "execution:reviewer_finished":
+        case "execution:reviewer_finished": {
           execStore.setReviewerStatus(data.reviewerId, data.signal?.type ?? "error");
+          if (execStore.currentUnit) {
+            const key = `${execStore.currentUnit.id}:${data.reviewerId}`;
+            delete execStore.turnUsageByUnit[key];
+            delete execStore.contextUsageByUnit[key];
+          }
           break;
+        }
         case "execution:multi_review_finished":
           // Informational only — tabs remain visible
           break;
