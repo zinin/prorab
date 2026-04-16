@@ -920,6 +920,23 @@ export class ClaudeDriver implements AgentDriver {
       return null; // Caller breaks the event loop
     }
 
+    // SDK hit its built-in maxTurns limit. Mirror the OpenCode/Codex fail-soft
+    // contract: signal:none + "Max turns exceeded (N)" marker + preserved
+    // metrics, so run.ts:371 treats it as a retry candidate instead of a hard
+    // stop. The SDK subtype is "error_max_turns" in current SDK versions.
+    if (msg.subtype === "error_max_turns") {
+      const limit = ctx.maxTurns || ctx.numTurns;
+      const marker = `Max turns exceeded (${limit})`;
+      console.error(`  !!! ${marker} — retrying !!!`);
+      if (msg.result) {
+        ctx.resultText += "\n" + String(msg.result);
+      }
+      ctx.resultText = ctx.resultText
+        ? `${marker}\n${ctx.resultText.trimStart()}`
+        : marker;
+      return this.buildIterationResult(ctx, { type: "none" }, null, null);
+    }
+
     return this.buildIterationResult(ctx, {
       type: "error",
       message: `SDK result: ${msg.subtype}`,

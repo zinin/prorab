@@ -432,6 +432,11 @@ export class OpenCodeDriver implements AgentDriver {
         if (opts.abortController?.signal.aborted) break;
 
         const shouldBreak = this.processEvent(event, ctx);
+        // maxTurns breach wins the race over any session.error that may be
+        // synthesized by the server in response to our client-initiated abort.
+        // Without this check, handleSessionError would set ctx.errorResult and
+        // we'd return a hard error instead of the fail-soft signal:none.
+        if (ctx.maxTurnsExceeded) break;
         if (ctx.errorResult) return ctx.errorResult;
         if (shouldBreak) break;
       }

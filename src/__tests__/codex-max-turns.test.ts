@@ -168,4 +168,39 @@ describe("CodexDriver — maxTurns enforcement", () => {
       expect(result.signal.message).not.toMatch(/Max turns exceeded/);
     }
   });
+
+  it("SDK surfaces abort as DOMException AbortError — still classified as breach", async () => {
+    // When abortController.abort(MaxTurnsExceededError) is called, some SDK
+    // versions wrap it: the for-await throws a standard AbortError while
+    // signal.reason still carries our MaxTurnsExceededError instance. The
+    // catch block must recognize this via `maxTurnsExceeded` flag or via
+    // `signal.reason instanceof MaxTurnsExceededError` and return the
+    // fail-soft signal:none result.
+    const ac = new AbortController();
+    mockThread.runStreamed.mockImplementation(async () => {
+      return {
+        events: (async function* () {
+          yield threadStarted();
+          yield toolStartedCmd();
+          yield toolCompletedCmd();
+          yield toolStartedCmd();
+          yield toolCompletedCmd();
+          // 3rd tool-call triggers our abort; simulate the SDK reacting by
+          // throwing a synthetic AbortError on the next iteration instead of
+          // respecting the flag guard.
+          yield toolStartedCmd();
+          const abortErr = new Error("The operation was aborted");
+          abortErr.name = "AbortError";
+          throw abortErr;
+        })(),
+      };
+    });
+    const driver = new CodexDriver();
+    const result = await driver.runSession(
+      makeOpts({ maxTurns: 2, abortController: ac }),
+    );
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(2\)/);
+    expect(ac.signal.reason).toBeInstanceOf(MaxTurnsExceededError);
+  });
 });

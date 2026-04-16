@@ -123,6 +123,54 @@ describe("ClaudeDriver — agent:turn_count emission", () => {
     expect(turnEvents.every((e) => e.model === "claude-opus-4-6")).toBe(true);
   });
 
+  it("returns signal:none with Max turns exceeded marker when SDK reports error_max_turns", async () => {
+    // Fixture: SDK honored its built-in maxTurns and terminated the turn with
+    // result.subtype === "error_max_turns". The driver must translate this
+    // into the shared fail-soft contract: signal:none + prepended marker +
+    // preserved metrics, so run.ts treats it as a no-signal retry candidate
+    // instead of a hard error stop.
+    sdkRunMessages = [
+      { type: "system", subtype: "init", model: "claude-opus-4-6", tools: [] },
+      { type: "assistant", message: { content: [{ type: "text", text: "partial output" }] } },
+      {
+        type: "result",
+        subtype: "error_max_turns",
+        duration_ms: 200,
+        total_cost_usd: 0.05,
+        num_turns: 5,
+        modelUsage: {
+          "claude-opus-4-6": {
+            inputTokens: 1000,
+            outputTokens: 200,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+          },
+        },
+        result: "truncated at the limit",
+      },
+    ];
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const driver = new ClaudeDriver();
+    const result = await driver.runSession({
+      prompt: "p",
+      systemPrompt: "s",
+      cwd: "/tmp",
+      maxTurns: 5,
+      verbosity: "quiet",
+      unitId: "u1",
+    });
+
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(5\)/);
+    // Metrics are preserved — NOT zeroed through errorResult
+    expect(result.numTurns).toBe(5);
+    expect(result.inputTokens).toBe(1000);
+    expect(result.outputTokens).toBe(200);
+    expect(result.costUsd).toBeCloseTo(0.05);
+    consoleErrorSpy.mockRestore();
+  });
+
   it("does NOT emit agent:turn_count during startChat", async () => {
     sdkChatQueue = new AsyncQueue<Record<string, unknown>>();
     const events: LogEvent[] = [];

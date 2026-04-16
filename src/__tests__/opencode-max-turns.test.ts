@@ -84,6 +84,19 @@ function idle(): Record<string, unknown> {
   return { type: "session.idle", properties: { sessionID: "s1" } };
 }
 
+/**
+ * OpenCode server emits session.error synthetically in some versions after a
+ * client-initiated session.abort(). The breach branch in runSession must
+ * short-circuit BEFORE handleSessionError sets ctx.errorResult, otherwise we
+ * return signal:error instead of the fail-soft signal:none.
+ */
+function sessionError(message = "aborted"): Record<string, unknown> {
+  return {
+    type: "session.error",
+    properties: { sessionID: "s1", error: { message } },
+  };
+}
+
 const baseOpts: SessionOptions = {
   prompt: "test",
   systemPrompt: "sys",
@@ -163,6 +176,26 @@ describe("OpenCodeDriver — maxTurns enforcement", () => {
 
     expect(client._abortSpy).toHaveBeenCalledTimes(1);
     expect(result.numTurns).toBe(2);
+  });
+
+  it("breach wins race over session.error emitted after our abort", async () => {
+    const driver = new OpenCodeDriver();
+    // After the 2nd step-finish the driver calls session.abort(). The mocked
+    // server then emits session.error BEFORE session.idle — this is what real
+    // OpenCode servers do in some versions. Without the maxTurnsExceeded
+    // guard in runSession, ctx.errorResult would win and we'd return
+    // signal:error instead of signal:none.
+    const client = makeMockClient(() =>
+      sseFromArray([stepFinish(), stepFinish(), sessionError(), idle()]),
+    );
+    (driver as unknown as { client: MockClient }).client = client;
+
+    const result = await driver.runSession({ ...baseOpts, maxTurns: 2 });
+
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(2\)/);
+    expect(result.numTurns).toBe(2);
+    expect(result.inputTokens).toBeGreaterThan(0);
   });
 
   it("treats maxTurns === 0 as unlimited", async () => {

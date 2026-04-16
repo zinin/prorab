@@ -315,8 +315,9 @@ export class CodexDriver implements AgentDriver {
       }
 
       if (maxTurnsExceeded) {
+        const breachLimit = opts.maxTurns ?? 0;
         return this.buildMaxTurnsResult({
-          maxTurns: opts.maxTurns!,
+          maxTurns: breachLimit,
           startTime,
           toolCalls,
           resultText,
@@ -325,11 +326,24 @@ export class CodexDriver implements AgentDriver {
         });
       }
     } catch (err: unknown) {
-      if (err instanceof MaxTurnsExceededError) {
-        // Fallback path: should normally be caught by the maxTurnsExceeded
-        // branch above, but the SDK may surface our abort as a thrown error.
+      // Detect our own abort even when the SDK wraps or replaces the reason.
+      // abortController.abort(err) may surface as:
+      //   - the MaxTurnsExceededError itself (direct throw)
+      //   - a DOMException AbortError whose signal.reason IS our error
+      //   - some other thrown Error while maxTurnsExceeded flag is already set
+      const reason = opts.abortController?.signal.reason;
+      const isOurBreach =
+        maxTurnsExceeded ||
+        err instanceof MaxTurnsExceededError ||
+        reason instanceof MaxTurnsExceededError;
+      if (isOurBreach) {
+        const breachLimit =
+          (err instanceof MaxTurnsExceededError && err.maxTurns) ||
+          (reason instanceof MaxTurnsExceededError && reason.maxTurns) ||
+          opts.maxTurns ||
+          0;
         return this.buildMaxTurnsResult({
-          maxTurns: opts.maxTurns!,
+          maxTurns: breachLimit,
           startTime,
           toolCalls,
           resultText,

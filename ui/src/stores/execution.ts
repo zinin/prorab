@@ -219,21 +219,6 @@ export const useExecutionStore = defineStore("execution", () => {
     };
   }
 
-  function clearTurnUsage(scope?: { unitId?: string; reviewerId?: string }) {
-    if (!scope) {
-      turnUsageByUnit.value = {};
-      return;
-    }
-    if (scope.unitId && scope.reviewerId) {
-      delete turnUsageByUnit.value[`${scope.unitId}:${scope.reviewerId}`];
-    } else if (scope.unitId) {
-      delete turnUsageByUnit.value[scope.unitId];
-      for (const key of Object.keys(turnUsageByUnit.value)) {
-        if (key.startsWith(`${scope.unitId}:`)) delete turnUsageByUnit.value[key];
-      }
-    }
-  }
-
   function clearTaskContext() {
     taskContext.value = null;
   }
@@ -330,7 +315,7 @@ export const useExecutionStore = defineStore("execution", () => {
     iterationCurrent, iterationTotal, gracefulStop,
     startExecution, stopExecution, addEvent, clearEvents, fetchModels,
     fetchTaskContext, clearTaskContext, updateContextUsage,
-    updateTurnUsage, clearTurnUsage,
+    updateTurnUsage,
     startMultiReview, addReviewerEvent, addAggregatorTab, closeReviewerTab, clearReviewerTabs, setReviewerStatus, setReviewRoundInfo,
     setIterationInfo, clearIterationInfo, requestGracefulStop, cancelGracefulStop,
   };
