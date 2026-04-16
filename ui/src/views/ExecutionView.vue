@@ -473,6 +473,10 @@ async function toggleGracefulStop() {
             <label>Max iterations</label>
             <InputNumber v-model="maxIterations" :min="1" placeholder="∞" :disabled="isRunning" />
           </div>
+          <div v-if="reviewEnabled" class="control-field numeric-field">
+            <label>Review max turns</label>
+            <InputNumber v-model="reviewMaxTurns" :min="1" :max="9999" :disabled="isRunning" />
+          </div>
         </div>
 
         <div class="controls-row checkboxes">
@@ -499,10 +503,6 @@ async function toggleGracefulStop() {
         <div v-if="reviewEnabled" class="reviewer-config">
           <div class="reviewer-header">
             <label class="reviewer-title">Reviewers</label>
-            <div class="control-field numeric-field reviewer-max-turns-field">
-              <label>Review max turns</label>
-              <InputNumber v-model="reviewMaxTurns" :min="1" :max="9999" :disabled="isRunning" />
-            </div>
             <Button label="Add reviewer" icon="pi pi-plus" size="small" text @click="addReviewer" :disabled="isRunning || reviewers.length >= 10" />
           </div>
           <div v-for="reviewer in reviewers" :key="reviewer.id" class="reviewer-row">
@@ -984,10 +984,6 @@ async function toggleGracefulStop() {
   font-weight: 600;
   color: #666;
   text-transform: uppercase;
-}
-.reviewer-max-turns-field {
-  margin-left: auto;
-  margin-right: 0.75rem;
 }
 .reviewer-row {
   display: flex;
