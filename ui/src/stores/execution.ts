@@ -37,6 +37,7 @@ export const useExecutionStore = defineStore("execution", () => {
   const taskContext = ref<TaskContext | null>(null);
   const taskContextLoading = ref(false);
   const contextUsageByUnit = ref<Record<string, { contextTokens: number; contextWindow: number; model: string }>>({});
+  const turnUsageByUnit = ref<Record<string, { numTurns: number; maxTurns: number; model: string }>>({});
 
   // Per-reviewer state for multi-review tabs
   const reviewerTabs = ref<string[]>([]);
@@ -57,6 +58,15 @@ export const useExecutionStore = defineStore("execution", () => {
     }
     return contextUsageByUnit.value[unit.id] ?? null;
   });
+
+  const turnUsage = computed(() => {
+    const unit = currentUnit.value;
+    if (!unit) return null;
+    if (activeReviewerTab.value) {
+      return turnUsageByUnit.value[`${unit.id}:${activeReviewerTab.value}`] ?? null;
+    }
+    return turnUsageByUnit.value[unit.id] ?? null;
+  });
   let fetchAbort: AbortController | null = null;
 
   async function startExecution(options: {
@@ -69,6 +79,7 @@ export const useExecutionStore = defineStore("execution", () => {
     reviewContext?: boolean;
     maxRetries?: number;
     maxTurns?: number;
+    reviewMaxTurns?: number;
     maxIterations?: number | null;
     debug?: boolean;
     trace?: boolean;
@@ -84,6 +95,7 @@ export const useExecutionStore = defineStore("execution", () => {
     error.value = null;
     taskContext.value = null;
     contextUsageByUnit.value = {};
+    turnUsageByUnit.value = {};
     reviewRoundInfo.value = null;
     iterationCurrent.value = null;
     iterationTotal.value = null;
@@ -198,6 +210,30 @@ export const useExecutionStore = defineStore("execution", () => {
     };
   }
 
+  function updateTurnUsage(data: { numTurns: number; maxTurns: number; model: string; unitId: string; reviewerId?: string }) {
+    const key = data.reviewerId ? `${data.unitId}:${data.reviewerId}` : data.unitId;
+    turnUsageByUnit.value[key] = {
+      numTurns: data.numTurns,
+      maxTurns: data.maxTurns,
+      model: data.model,
+    };
+  }
+
+  function clearTurnUsage(scope?: { unitId?: string; reviewerId?: string }) {
+    if (!scope) {
+      turnUsageByUnit.value = {};
+      return;
+    }
+    if (scope.unitId && scope.reviewerId) {
+      delete turnUsageByUnit.value[`${scope.unitId}:${scope.reviewerId}`];
+    } else if (scope.unitId) {
+      delete turnUsageByUnit.value[scope.unitId];
+      for (const key of Object.keys(turnUsageByUnit.value)) {
+        if (key.startsWith(`${scope.unitId}:`)) delete turnUsageByUnit.value[key];
+      }
+    }
+  }
+
   function clearTaskContext() {
     taskContext.value = null;
   }
@@ -289,10 +325,12 @@ export const useExecutionStore = defineStore("execution", () => {
   return {
     state, currentUnit, events, error, models, modelsLoading, modelsError,
     taskContext, taskContextLoading, contextUsage, contextUsageByUnit,
+    turnUsage, turnUsageByUnit,
     reviewerTabs, reviewerEvents, activeReviewerTab, reviewerStatuses, reviewRoundInfo,
     iterationCurrent, iterationTotal, gracefulStop,
     startExecution, stopExecution, addEvent, clearEvents, fetchModels,
     fetchTaskContext, clearTaskContext, updateContextUsage,
+    updateTurnUsage, clearTurnUsage,
     startMultiReview, addReviewerEvent, addAggregatorTab, closeReviewerTab, clearReviewerTabs, setReviewerStatus, setReviewRoundInfo,
     setIterationInfo, clearIterationInfo, requestGracefulStop, cancelGracefulStop,
   };
