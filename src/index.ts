@@ -39,7 +39,8 @@ program
   .option("--model <model>", "Model for the agent (optional)")
   .option("--variant <variant>", "Effort level (Claude: low/medium/high/max) or model variant (OpenCode)")
   .option("--max-retries <number>", "Max retry attempts per task", "3")
-  .option("--max-turns <number>", "Max turns per task attempt (claude only; ignored for opencode)", "200")
+  .option("--max-turns <number>", "Max turns per task attempt (execute/rework)", "200")
+  .option("--review-max-turns <number>", "Max turns per review/aggregator attempt", "100")
   .option("--max-iterations <number>", "Max total SDK sessions across all tasks")
   .option("--allow-dirty", "Allow running with uncommitted changes", false)
   .option("--quiet", "Suppress SDK session output", false)
@@ -65,6 +66,7 @@ program
       variant: opts.variant,
       maxRetries: opts.maxRetries,
       maxTurns: opts.maxTurns,
+      reviewMaxTurns: opts.reviewMaxTurns,
       maxIterations: opts.maxIterations,
       allowDirty: opts.allowDirty,
       quiet: opts.quiet,
