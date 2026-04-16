@@ -707,10 +707,10 @@ async function toggleGracefulStop() {
 }
 .numeric-field {
   flex-shrink: 0;
-  width: 7rem;
+  min-width: 7rem;
 }
 .numeric-field :deep(.p-inputnumber) {
-  width: 100%;
+  width: 7rem;
 }
 .numeric-field :deep(.p-inputnumber-input) {
   width: 100%;
@@ -720,6 +720,7 @@ async function toggleGracefulStop() {
   font-weight: 600;
   color: #666;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 .text-input {
   padding: 0.5rem;
