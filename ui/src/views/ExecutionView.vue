@@ -28,6 +28,7 @@ const model = usePersistedRef("prorab:modelFallback", "");
 const reviewEnabled = usePersistedRef("prorab:reviewEnabled", true);
 const maxRetries = usePersistedRef("prorab:maxRetries", 3);
 const maxTurns = usePersistedRef("prorab:maxTurns", 200);
+const reviewMaxTurns = usePersistedRef("prorab:reviewMaxTurns", 100);
 const maxIterations = usePersistedRef<number | null>("prorab:maxIterations", null);
 const verbosity = usePersistedRef("prorab:verbosity", "info");
 const verbosityOptions = [
@@ -229,6 +230,19 @@ const contextBarColor = computed(() => {
   return "#6a9955";
 });
 
+const turnPercent = computed(() => {
+  const u = execStore.turnUsage;
+  if (!u || !u.maxTurns) return 0;
+  return Math.min(100, Math.round((u.numTurns / u.maxTurns) * 100));
+});
+
+const turnBarColor = computed(() => {
+  const p = turnPercent.value;
+  if (p >= 60) return "#f44747";
+  if (p >= 35) return "#dcdcaa";
+  return "#6a9955";
+});
+
 function formatTokens(n: number): string {
   return n.toLocaleString("en-US");
 }
@@ -356,6 +370,7 @@ async function start() {
       reviewContext: reviewEnabled.value ? reviewContext.value : false,
       maxRetries: maxRetries.value,
       maxTurns: maxTurns.value,
+      reviewMaxTurns: reviewMaxTurns.value,
       maxIterations: maxIterations.value ?? undefined,
       debug: verbosity.value === "debug",
       trace: verbosity.value === "trace",
@@ -484,6 +499,10 @@ async function toggleGracefulStop() {
         <div v-if="reviewEnabled" class="reviewer-config">
           <div class="reviewer-header">
             <label class="reviewer-title">Reviewers</label>
+            <div class="control-field numeric-field reviewer-max-turns-field">
+              <label>Review max turns</label>
+              <InputNumber v-model="reviewMaxTurns" :min="1" :max="9999" :disabled="isRunning" />
+            </div>
             <Button label="Add reviewer" icon="pi pi-plus" size="small" text @click="addReviewer" :disabled="isRunning || reviewers.length >= 10" />
           </div>
           <div v-for="reviewer in reviewers" :key="reviewer.id" class="reviewer-row">
@@ -559,6 +578,17 @@ async function toggleGracefulStop() {
           :style="{ width: '120px', height: '16px', '--p-progressbar-value-background': contextBarColor }"
         />
         <span class="context-percent">{{ contextPercent }}%</span>
+      </div>
+      <div v-if="execStore.turnUsage" class="turn-usage">
+        <span class="turn-label">Turns</span>
+        <span class="turn-count">{{ execStore.turnUsage.numTurns }} / {{ execStore.turnUsage.maxTurns > 0 ? execStore.turnUsage.maxTurns : '∞' }}</span>
+        <ProgressBar
+          v-if="execStore.turnUsage.maxTurns > 0"
+          :value="turnPercent"
+          :showValue="false"
+          :style="{ width: '120px', height: '16px', '--p-progressbar-value-background': turnBarColor }"
+        />
+        <span v-if="execStore.turnUsage.maxTurns > 0" class="turn-percent">{{ turnPercent }}%</span>
       </div>
     </div>
 
@@ -751,6 +781,29 @@ async function toggleGracefulStop() {
   color: #475569;
   min-width: 2.5em;
 }
+.turn-usage {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.turn-label {
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+}
+.turn-count {
+  color: #475569;
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+.turn-percent {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: #475569;
+  min-width: 2.5em;
+}
 .agent-output {
   grid-column: 1;
   grid-row: 3;
@@ -931,6 +984,10 @@ async function toggleGracefulStop() {
   font-weight: 600;
   color: #666;
   text-transform: uppercase;
+}
+.reviewer-max-turns-field {
+  margin-left: auto;
+  margin-right: 0.75rem;
 }
 .reviewer-row {
   display: flex;
