@@ -799,16 +799,21 @@ export class ClaudeDriver implements AgentDriver {
   private handleAssistant(msg: Record<string, unknown>, ctx: ClaudeContext): void {
     // Live turn count for UI indicator. SDK only exposes num_turns at end of
     // session via the `result` message — too late for the live indicator.
-    // We maintain our own counter incremented per assistant SDK message.
+    // We maintain our own counter incremented per MAIN-thread assistant message.
+    // Sub-agent messages (Task tool workers) carry parent_tool_use_id !== null
+    // and must NOT be counted — SDK's maxTurns limit applies to the main thread,
+    // and counting sub-agents would overshoot the indicator (e.g. 268/200).
     // Only fires from runSession; startChat uses sdkMessageToChatEvents instead.
-    ctx.numApiCalls++;
-    ctx.logger.sendToLog({
-      type: "agent:turn_count",
-      numTurns: ctx.numApiCalls,
-      maxTurns: ctx.maxTurns,
-      model: ctx.model,
-      unitId: ctx.unitId,
-    });
+    if (msg.parent_tool_use_id == null) {
+      ctx.numApiCalls++;
+      ctx.logger.sendToLog({
+        type: "agent:turn_count",
+        numTurns: ctx.numApiCalls,
+        maxTurns: ctx.maxTurns,
+        model: ctx.model,
+        unitId: ctx.unitId,
+      });
+    }
 
     const content = (msg as unknown as { message: { content: Array<Record<string, unknown>> } }).message.content;
     for (const block of content) {

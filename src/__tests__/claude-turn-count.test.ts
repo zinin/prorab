@@ -171,6 +171,36 @@ describe("ClaudeDriver — agent:turn_count emission", () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it("does NOT count sub-agent assistant messages (parent_tool_use_id !== null)", async () => {
+    // SDK's maxTurns applies to the main thread only. Sub-agent messages
+    // spawned by the Task tool carry parent_tool_use_id !== null — counting
+    // them would overshoot the indicator (e.g. 268/200 when main thread
+    // is at 200 but inner Task workers emitted extra assistants).
+    sdkRunMessages = [
+      { type: "system", subtype: "init", model: "claude-opus-4-6", tools: [] },
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "main 1" }] } },
+      { type: "assistant", parent_tool_use_id: "toolu_01", message: { content: [{ type: "text", text: "subagent A" }] } },
+      { type: "assistant", parent_tool_use_id: "toolu_02", message: { content: [{ type: "text", text: "subagent B" }] } },
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "main 2" }] } },
+      {
+        type: "result", subtype: "success", duration_ms: 0, total_cost_usd: 0, num_turns: 2, modelUsage: {}, result: "",
+      },
+    ];
+
+    const events: LogEvent[] = [];
+    const driver = new ClaudeDriver();
+    await driver.runSession({
+      prompt: "p", systemPrompt: "s", cwd: "/tmp", maxTurns: 10, verbosity: "quiet", unitId: "u1",
+      onLog: (e) => events.push(e),
+    });
+
+    const turns = events.filter(
+      (e): e is Extract<LogEvent, { type: "agent:turn_count" }> => e.type === "agent:turn_count",
+    );
+    // Only the two parent_tool_use_id === null messages count.
+    expect(turns.map((e) => e.numTurns)).toEqual([1, 2]);
+  });
+
   it("does NOT emit agent:turn_count during startChat", async () => {
     sdkChatQueue = new AsyncQueue<Record<string, unknown>>();
     const events: LogEvent[] = [];
