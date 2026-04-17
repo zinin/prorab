@@ -212,7 +212,17 @@ export class CodexDriver implements AgentDriver {
       });
 
       for await (const event of streamedTurn.events) {
-        if (maxTurnsExceeded) break;
+        if (maxTurnsExceeded) {
+          // After breach, consume only terminal events so `usage` metrics
+          // from turn.completed are preserved. Skip item.* events to prevent
+          // toolCalls overshoot and stale UI emissions after abort.
+          if (event.type === "turn.completed") {
+            usage = event.usage;
+            break;
+          }
+          if (event.type === "turn.failed" || event.type === "error") break;
+          continue;
+        }
         switch (event.type) {
           case "thread.started":
             threadId = (event as { thread_id: string }).thread_id;

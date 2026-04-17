@@ -51,11 +51,14 @@ function reasoning() {
 function agentMessage(text = "ok") {
   return { type: "item.completed", item: { type: "agent_message", text } };
 }
-function turnCompleted() {
-  return {
-    type: "turn.completed",
-    usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 },
-  };
+function turnCompleted(
+  usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cached_input_tokens: 0,
+  },
+) {
+  return { type: "turn.completed", usage };
 }
 
 describe("CodexDriver — maxTurns enforcement", () => {
@@ -185,6 +188,37 @@ describe("CodexDriver — maxTurns enforcement", () => {
     expect(result.signal.type).toBe("none");
     expect(result.resultText).toMatch(/^Max turns exceeded \(1\)/);
     expect(result.numTurns).toBe(1);
+  });
+
+  it("preserves token usage from turn.completed arriving after breach", async () => {
+    // Regression: the top-of-loop guard used to break unconditionally on
+    // maxTurnsExceeded, skipping turn.completed and zeroing token metrics.
+    // Now we consume the terminal event for its `usage` before breaking.
+    const ac = new AbortController();
+    mockThread.runStreamed.mockResolvedValue({
+      events: eventsFrom([
+        threadStarted(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        // Post-breach extra tool-call (should be dropped) +
+        // terminal turn.completed with real usage (must be preserved).
+        toolStartedCmd(),
+        toolCompletedCmd(),
+        turnCompleted({ input_tokens: 4200, output_tokens: 910, cached_input_tokens: 128 }),
+      ]),
+    });
+    const driver = new CodexDriver();
+    const result = await driver.runSession(
+      makeOpts({ maxTurns: 2, abortController: ac }),
+    );
+    expect(result.signal.type).toBe("none");
+    expect(result.resultText).toMatch(/^Max turns exceeded \(2\)/);
+    expect(result.numTurns).toBe(2);
+    expect(result.inputTokens).toBe(4200);
+    expect(result.outputTokens).toBe(910);
+    expect(result.cacheReadTokens).toBe(128);
   });
 
   it("SDK surfaces abort as DOMException AbortError — still classified as breach", async () => {
