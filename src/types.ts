@@ -35,7 +35,8 @@ export type LogEvent =
   | { type: "agent:tool_result"; summary: string; channel?: WsChannel; reviewerId?: string; slotIndex?: number; taskId?: number; phase?: string }
   | { type: "agent:system_prompt"; text: string; channel?: WsChannel; reviewerId?: string; slotIndex?: number; taskId?: number; phase?: string }
   | { type: "agent:task_prompt"; text: string; channel?: WsChannel; reviewerId?: string; slotIndex?: number; taskId?: number; phase?: string }
-  | { type: "agent:context_usage"; contextTokens: number; contextWindow: number; model: string; unitId: string; channel?: WsChannel; reviewerId?: string; slotIndex?: number; taskId?: number; phase?: string };
+  | { type: "agent:context_usage"; contextTokens: number; contextWindow: number; model: string; unitId: string; channel?: WsChannel; reviewerId?: string; slotIndex?: number; taskId?: number; phase?: string }
+  | { type: "agent:turn_count"; numTurns: number; maxTurns: number; model: string; unitId: string; channel?: WsChannel; reviewerId?: string; slotIndex?: number; taskId?: number; phase?: string };
 
 // --- Chat WebSocket event types ---
 
@@ -366,6 +367,7 @@ export interface RunOptions {
   variant?: string;
   maxRetries: number;
   maxTurns: number;
+  reviewMaxTurns: number;
   allowDirty: boolean;
   quiet: boolean;
   debug: boolean;

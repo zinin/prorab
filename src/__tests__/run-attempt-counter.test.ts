@@ -109,6 +109,7 @@ const defaultOptions: RunOptions = {
   agent: "claude",
   maxRetries: 0,
   maxTurns: 10,
+  reviewMaxTurns: 10,
   allowDirty: false,
   quiet: false,
   debug: false,
@@ -231,6 +232,31 @@ describe("executeUnit attempt counter integration", () => {
     expect(setStatusDirect).toHaveBeenCalledWith("3.1", "pending", "/fake/cwd");
     // incrementAttemptCount called once per session completion (twice total)
     expect(incrementAttemptCount).toHaveBeenCalledTimes(2);
+  });
+
+  it("maxTurns breach (signal:none + 'Max turns exceeded' marker) retries via existing no-signal path", async () => {
+    // Regression test for the max-turns-enforcement feature contract.
+    // Drivers signal a runaway session with `signal: { type: "none" }` and
+    // `resultText: "Max turns exceeded (N)\n..."`. executeUnit MUST treat
+    // this as the existing "no completion signal" retry candidate, not as a
+    // hard failure. If this test starts reporting only ONE runSession call,
+    // the fail-soft retry contract has regressed.
+    const options: RunOptions = { ...defaultOptions, maxRetries: 1 };
+    const driver = makeDriver([
+      {
+        ...makeResult({ type: "none" }),
+        resultText: "Max turns exceeded (100)\nsome partial agent output",
+      },
+      makeResult({ type: "complete" }),
+    ]);
+
+    const result = await executeUnit(defaultUnit, "/fake/cwd", options, driver, () => false);
+
+    expect(driver.runSession).toHaveBeenCalledTimes(2);
+    // Success on retry — executeUnit returns true.
+    expect(result).toBe(true);
+    // Status reset to pending between attempts
+    expect(setStatusDirect).toHaveBeenCalledWith("3.1", "pending", "/fake/cwd");
   });
 
   it("handles error signal - no retry", async () => {

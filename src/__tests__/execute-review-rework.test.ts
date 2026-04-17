@@ -78,7 +78,7 @@ vi.mock("../core/reviewer-utils.js", () => ({
   getReviewerId: vi.fn().mockReturnValue("claude-default"),
 }));
 
-import { executeReview, executeRework, executeReviewCycle } from "../commands/run.js";
+import { executeReview, executeRework, executeReviewCycle, executeUnit, buildExecutionUnit } from "../commands/run.js";
 import { setStatusDirect, getTaskRevisions, showTaskById, setMetadata, getReviewRoundInfo } from "../core/tasks-json.js";
 import { readReport, writeReviewReport, writeReviewerReport, readReviewReport, writeReworkReport, appendReport } from "../core/reporter.js";
 import { commitTaskmaster, ensureLockNotTracked, autoCommit } from "../core/git.js";
@@ -117,6 +117,7 @@ const defaultOptions: RunOptions = {
   agent: "claude",
   maxRetries: 0,
   maxTurns: 10,
+  reviewMaxTurns: 10,
   allowDirty: false,
   quiet: false,
   debug: false,
@@ -221,9 +222,10 @@ describe("executeReview", () => {
       expect(commitTaskmaster).toHaveBeenCalled();
     });
 
-    it("no signal with only resultText (no tags) → no report → task transitions to blocked", async () => {
-      // resultText without reviewReport/agentReport is not treated as a valid report
-      mockCreateDriver(makeResult({ type: "none" }, { resultText: "some review text" }));
+    it("no signal with only resultText (no tags) → no report → task transitions to blocked, partial text preserved as incomplete report", async () => {
+      // resultText without reviewReport/agentReport is not treated as a valid report,
+      // but partial text is preserved as <reviewerId>-incomplete for postmortem (e.g. maxTurns breach).
+      mockCreateDriver(makeResult({ type: "none" }, { resultText: "Max turns exceeded (100)\nsome review text" }));
       const driver = makeDriver(makeResult({ type: "complete" }));
       const task = makeTask({ status: "done" });
 
@@ -234,6 +236,14 @@ describe("executeReview", () => {
       expect(setStatusDirect).toHaveBeenCalledWith("5", "review", "/fake/cwd");
       expect(setStatusDirect).toHaveBeenCalledWith("5", "blocked", "/fake/cwd");
       expect(writeReviewReport).toHaveBeenCalled();
+      // Partial output saved as incomplete report
+      expect(writeReviewerReport).toHaveBeenCalledWith(
+        "/fake/cwd",
+        "5",
+        "claude-default-incomplete",
+        expect.stringContaining("Max turns exceeded (100)"),
+        undefined,
+      );
     });
   });
 
@@ -917,5 +927,179 @@ describe("executeRework isFinalRound", () => {
     await executeRework(task, "/fake/cwd", defaultOptions, driver, () => false);
 
     expect(writeReworkReport).not.toHaveBeenCalled();
+  });
+});
+
+describe("run.ts — reviewMaxTurns routing", () => {
+  // Distinguishable values: maxTurns: 200 vs reviewMaxTurns: 42
+  const routingOptions: RunOptions = {
+    ...defaultOptions,
+    maxTurns: 200,
+    reviewMaxTurns: 42,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getTaskRevisions).mockReturnValue({ startRev: "aaa111", endRev: "bbb222" });
+    vi.mocked(readReport).mockReturnValue("execution report content");
+    vi.mocked(readReviewReport).mockReturnValue("review feedback");
+  });
+
+  it("reviewer runSession receives reviewMaxTurns, not maxTurns", async () => {
+    // Arrange: single reviewer (the primary) — captures runSession args
+    const reviewerRunSession = vi.fn(async () => makeResult({ type: "complete" }, { reviewReport: "review text" }));
+    vi.mocked(createDriver).mockReturnValue({ runSession: reviewerRunSession, ...chatStubs } as AgentDriver);
+
+    const passedDriver = makeDriver(makeResult({ type: "complete" }));
+    const task = makeTask({ status: "done" });
+
+    // Act
+    await executeReview(task, "/fake/cwd", routingOptions, passedDriver, () => false);
+
+    // Assert: the reviewer driver's runSession got reviewMaxTurns (42), not maxTurns (200)
+    expect(reviewerRunSession).toHaveBeenCalledTimes(1);
+    expect(reviewerRunSession).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTurns: 42 }),
+    );
+  });
+
+  it("aggregator runSession receives reviewMaxTurns", async () => {
+    // Arrange: two reviewers so the aggregator path fires.
+    // Each reviewer creates its own driver via createDriver(), then the aggregator creates one more.
+    // Tag each call by the systemPrompt to distinguish reviewer vs aggregator runSession calls.
+    const allRunSessionCalls: Array<{ phase: string; opts: any }> = [];
+
+    vi.mocked(createDriver).mockImplementation(() => ({
+      runSession: vi.fn(async (opts: any) => {
+        const phase = opts.systemPrompt === "aggregation system prompt" ? "aggregator" : "reviewer";
+        allRunSessionCalls.push({ phase, opts });
+        // Reviewer must produce a report so aggregation path is reached.
+        if (phase === "reviewer") {
+          return makeResult({ type: "complete" }, { reviewReport: "reviewer text" });
+        }
+        // Aggregator returns a complete signal.
+        return makeResult({ type: "complete" }, { reviewReport: "aggregated text" });
+      }),
+      ...chatStubs,
+    } as AgentDriver));
+
+    // Provide distinct reviewer IDs so dedup keeps both reviewers.
+    let getReviewerIdCallCount = 0;
+    vi.mocked((await import("../core/reviewer-utils.js")).getReviewerId)
+      .mockImplementation(() => `reviewer-${++getReviewerIdCallCount}`);
+
+    const optsTwoReviewers: RunOptions = {
+      ...routingOptions,
+      reviewers: [
+        { agent: "claude", model: "model-a" },
+        { agent: "claude", model: "model-b" },
+      ],
+    };
+
+    const passedDriver = makeDriver(makeResult({ type: "complete" }));
+    const task = makeTask({ status: "done" });
+
+    // Act
+    await executeReview(task, "/fake/cwd", optsTwoReviewers, passedDriver, () => false);
+
+    // Assert: at least one aggregator call exists, and it has maxTurns=42.
+    const aggregatorCalls = allRunSessionCalls.filter((c) => c.phase === "aggregator");
+    expect(aggregatorCalls.length).toBe(1);
+    expect(aggregatorCalls[0].opts.maxTurns).toBe(42);
+
+    // Sanity: reviewer calls also got 42 (so this distinguishes from the maxTurns=200 default).
+    const reviewerCalls = allRunSessionCalls.filter((c) => c.phase === "reviewer");
+    expect(reviewerCalls.length).toBeGreaterThanOrEqual(2);
+    for (const c of reviewerCalls) {
+      expect(c.opts.maxTurns).toBe(42);
+    }
+  });
+
+  it("aggregator breach with partial resultText writes aggregator-incomplete report", async () => {
+    // Two reviewers produce reports → aggregation fires; aggregator returns signal:none
+    // with partial resultText (e.g. maxTurns breach) and no parseable report → blocked,
+    // but partial text is preserved.
+    vi.mocked(createDriver).mockImplementation(() => ({
+      runSession: vi.fn(async (opts: any) => {
+        if (opts.systemPrompt === "aggregation system prompt") {
+          return makeResult(
+            { type: "none" },
+            { resultText: "Max turns exceeded (42)\npartial aggregation text", reviewReport: null, agentReport: null },
+          );
+        }
+        return makeResult({ type: "complete" }, { reviewReport: "reviewer text" });
+      }),
+      ...chatStubs,
+    } as AgentDriver));
+
+    let getReviewerIdCallCount = 0;
+    vi.mocked((await import("../core/reviewer-utils.js")).getReviewerId)
+      .mockImplementation(() => `reviewer-${++getReviewerIdCallCount}`);
+
+    const optsTwoReviewers: RunOptions = {
+      ...routingOptions,
+      reviewers: [
+        { agent: "claude", model: "model-a" },
+        { agent: "claude", model: "model-b" },
+      ],
+    };
+
+    const passedDriver = makeDriver(makeResult({ type: "complete" }));
+    const task = makeTask({ status: "done" });
+
+    const result = await executeReview(task, "/fake/cwd", optsTwoReviewers, passedDriver, () => false);
+
+    expect(result).toBe(false);
+    expect(setStatusDirect).toHaveBeenCalledWith("5", "blocked", "/fake/cwd");
+    expect(writeReviewerReport).toHaveBeenCalledWith(
+      "/fake/cwd",
+      "5",
+      "aggregator-incomplete",
+      expect.stringContaining("Max turns exceeded (42)"),
+      undefined,
+    );
+  });
+
+  it("rework runSession receives maxTurns (not reviewMaxTurns)", async () => {
+    // Arrange: passed-in driver is the rework driver (executeRework uses it directly).
+    const reworkRunSession = vi.fn(async () => makeResult({ type: "complete" }, { agentReport: "fixed it" }));
+    const driver: AgentDriver = { runSession: reworkRunSession, ...chatStubs } as AgentDriver;
+    const task = makeTask({ status: "rework" });
+
+    // Act
+    await executeRework(task, "/fake/cwd", routingOptions, driver, () => false);
+
+    // Assert: rework receives maxTurns (200), NOT reviewMaxTurns (42).
+    expect(reworkRunSession).toHaveBeenCalledTimes(1);
+    expect(reworkRunSession).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTurns: 200 }),
+    );
+  });
+
+  it("execute runSession receives maxTurns (not reviewMaxTurns)", async () => {
+    // Arrange: real tempdir with .taskmaster/tasks/tasks.json (executeUnit reads/writes it).
+    const tmpDir = mkdtempSync(join(tmpdir(), "prorab-execute-"));
+    mkdirSync(join(tmpDir, ".taskmaster", "tasks"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".taskmaster", "tasks", "tasks.json"),
+      JSON.stringify({ tasks: [] }),
+    );
+
+    const executeRunSession = vi.fn(async () => makeResult({ type: "complete" }));
+    const driver: AgentDriver = { runSession: executeRunSession, ...chatStubs } as AgentDriver;
+
+    const task = makeTask({ status: "pending", id: 7, title: "Exec task" });
+    const unit = buildExecutionUnit(task);
+
+    // Act
+    await executeUnit(unit, tmpDir, routingOptions, driver, () => false);
+
+    // Assert: execute receives maxTurns (200), NOT reviewMaxTurns (42).
+    expect(executeRunSession).toHaveBeenCalledTimes(1);
+    expect(executeRunSession).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTurns: 200 }),
+    );
   });
 });

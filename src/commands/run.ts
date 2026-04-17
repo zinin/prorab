@@ -591,7 +591,7 @@ export async function executeReview(
         prompt,
         systemPrompt,
         cwd,
-        maxTurns: options.maxTurns,
+        maxTurns: options.reviewMaxTurns,
         abortController: ac,
         verbosity,
         onLog: taggedOnLog,
@@ -695,9 +695,14 @@ export async function executeReview(
 
   // Write error reports for fulfilled results that errored without producing a report
   for (const r of allResults) {
-    if (r.reviewReport == null && r.signal.type === "error") {
+    if (r.reviewReport != null) continue;
+    if (r.signal.type === "error") {
       const errorReport = `# Review Error: Task ${taskId} — Reviewer ${r.reviewerId}\n\n${r.signal.message}\n`;
       writeReviewerReport(cwd, taskId, `${r.reviewerId}-error`, errorReport, roundSuffix);
+    } else if (r.signal.type === "none" && r.iterationResult.resultText) {
+      // Breach (e.g. maxTurns exceeded) — preserve partial output for postmortem.
+      const incompleteReport = `# Review Incomplete: Task ${taskId} — Reviewer ${r.reviewerId}\n\n${r.iterationResult.resultText}\n`;
+      writeReviewerReport(cwd, taskId, `${r.reviewerId}-incomplete`, incompleteReport, roundSuffix);
     }
   }
 
@@ -777,7 +782,7 @@ export async function executeReview(
       prompt: aggTaskPrompt,
       systemPrompt: aggSystemPrompt,
       cwd,
-      maxTurns: options.maxTurns,
+      maxTurns: options.reviewMaxTurns,
       abortController: aggAc,
       verbosity,
       onLog: aggTaggedOnLog,
@@ -829,6 +834,11 @@ export async function executeReview(
   const aggContent = aggResult.reviewReport || aggResult.agentReport;
 
   if (!aggContent) {
+    if (aggResult.resultText) {
+      // Breach or malformed output — preserve partial text for postmortem.
+      const incompleteReport = `# Aggregation Incomplete: Task ${taskId}\n\n${aggResult.resultText}\n`;
+      writeReviewerReport(cwd, taskId, "aggregator-incomplete", incompleteReport, roundSuffix);
+    }
     console.log(`  Aggregation produced no parseable report, moving task ${taskId} to blocked.`);
     setStatusDirect(taskId, "blocked", cwd);
     commitTaskmaster(cwd, `prorab: aggregation produced no report for task ${taskId}`);

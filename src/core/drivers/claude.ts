@@ -26,6 +26,10 @@ interface ClaudeContext {
   cacheWriteTokens: number;
   model: string;
   unitId: string;
+  /** Maximum agentic turns from SessionOptions; mirrors SDK's maxTurns. */
+  maxTurns: number;
+  /** Live counter incremented on each handleAssistant call (one per assistant SDK message). */
+  numApiCalls: number;
   /** Tracks displayed tool_progress events (5s bucket throttle). */
   reportedTools: Set<string>;
 }
@@ -733,6 +737,8 @@ export class ClaudeDriver implements AgentDriver {
       cacheWriteTokens: 0,
       model: "unknown",
       unitId: opts.unitId,
+      maxTurns: opts.maxTurns,
+      numApiCalls: 0,
       reportedTools: new Set(),
     };
   }
@@ -791,6 +797,24 @@ export class ClaudeDriver implements AgentDriver {
 
   /** Handle assistant message: extract text and tool_use content blocks. */
   private handleAssistant(msg: Record<string, unknown>, ctx: ClaudeContext): void {
+    // Live turn count for UI indicator. SDK only exposes num_turns at end of
+    // session via the `result` message — too late for the live indicator.
+    // We maintain our own counter incremented per MAIN-thread assistant message.
+    // Sub-agent messages (Task tool workers) carry parent_tool_use_id !== null
+    // and must NOT be counted — SDK's maxTurns limit applies to the main thread,
+    // and counting sub-agents would overshoot the indicator (e.g. 268/200).
+    // Only fires from runSession; startChat uses sdkMessageToChatEvents instead.
+    if (msg.parent_tool_use_id == null) {
+      ctx.numApiCalls++;
+      ctx.logger.sendToLog({
+        type: "agent:turn_count",
+        numTurns: ctx.numApiCalls,
+        maxTurns: ctx.maxTurns,
+        model: ctx.model,
+        unitId: ctx.unitId,
+      });
+    }
+
     const content = (msg as unknown as { message: { content: Array<Record<string, unknown>> } }).message.content;
     for (const block of content) {
       if (block.type === "text") {
@@ -899,6 +923,23 @@ export class ClaudeDriver implements AgentDriver {
         ctx.resultText += "\n" + String(msg.result);
       }
       return null; // Caller breaks the event loop
+    }
+
+    // SDK hit its built-in maxTurns limit. Mirror the OpenCode/Codex fail-soft
+    // contract: signal:none + "Max turns exceeded (N)" marker + preserved
+    // metrics, so run.ts:371 treats it as a retry candidate instead of a hard
+    // stop. The SDK subtype is "error_max_turns" in current SDK versions.
+    if (msg.subtype === "error_max_turns") {
+      const limit = ctx.maxTurns || ctx.numTurns;
+      const marker = `Max turns exceeded (${limit})`;
+      console.error(`  !!! ${marker} — retrying !!!`);
+      if (msg.result) {
+        ctx.resultText += "\n" + String(msg.result);
+      }
+      ctx.resultText = ctx.resultText
+        ? `${marker}\n${ctx.resultText.trimStart()}`
+        : marker;
+      return this.buildIterationResult(ctx, { type: "none" }, null, null);
     }
 
     return this.buildIterationResult(ctx, {

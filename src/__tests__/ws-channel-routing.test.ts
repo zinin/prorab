@@ -283,6 +283,43 @@ describe("WebSocket channel routing", () => {
     expect(chatSpy).not.toHaveBeenCalled();
   });
 
+  it("routes agent:turn_count without channel to exec store (default channel)", () => {
+    const chatStore = useChatStore();
+    const execStore = useExecutionStore();
+    const chatSpy = vi.spyOn(chatStore, "handleWsEvent");
+
+    const result = routeWsEvent(
+      { type: "agent:turn_count", numTurns: 5, maxTurns: 100, model: "m", unitId: "u1" },
+      chatStore,
+      execStore,
+    );
+
+    expect(result).toBe("exec");
+    expect(chatSpy).not.toHaveBeenCalled();
+  });
+
+  it("preserves reviewerId on agent:turn_count when routed to exec store", () => {
+    const chatStore = useChatStore();
+    const execStore = useExecutionStore();
+    const chatSpy = vi.spyOn(chatStore, "handleWsEvent");
+
+    const event = {
+      type: "agent:turn_count",
+      numTurns: 3,
+      maxTurns: 100,
+      model: "m",
+      unitId: "u1",
+      reviewerId: "r1",
+    };
+
+    const result = routeWsEvent(event, chatStore, execStore);
+
+    expect(result).toBe("exec");
+    expect(chatSpy).not.toHaveBeenCalled();
+    // reviewerId is part of the event payload that the exec switch reads
+    expect(event.reviewerId).toBe("r1");
+  });
+
   it("routes execution:started to exec store", () => {
     const chatStore = useChatStore();
     const execStore = useExecutionStore();

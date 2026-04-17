@@ -11,7 +11,7 @@ import type {
   QuestionAnswers,
   SessionOptions,
 } from "./types.js";
-import { parseSignal, parseReport, parseReviewReport } from "./types.js";
+import { parseSignal, parseReport, parseReviewReport, MaxTurnsExceededError } from "./types.js";
 import { SessionLogger } from "./logging.js";
 import { setContextWindow } from "./context-window.js";
 import { AsyncQueue } from "./async-queue.js";
@@ -144,6 +144,40 @@ export class CodexDriver implements AgentDriver {
     return null;
   }
 
+  /**
+   * Build the IterationResult returned when maxTurns is breached. Both the
+   * in-loop breach branch and the MaxTurnsExceededError catch branch share
+   * this single source of truth.
+   */
+  private buildMaxTurnsResult(params: {
+    maxTurns: number;
+    startTime: number;
+    toolCalls: number;
+    resultText: string;
+    usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } | null;
+    modelName: string;
+  }): IterationResult {
+    const marker = `Max turns exceeded (${params.maxTurns})`;
+    console.error(`  !!! ${marker} — retrying !!!`);
+    return {
+      signal: { type: "none" },
+      durationMs: Date.now() - params.startTime,
+      costUsd: 0,
+      numTurns: Math.max(1, params.toolCalls),
+      resultText: `${marker}\n${params.resultText}`,
+      inputTokens: params.usage?.input_tokens ?? 0,
+      outputTokens: params.usage?.output_tokens ?? 0,
+      cacheReadTokens: params.usage?.cached_input_tokens ?? 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      model: params.modelName,
+      agentReport: null,
+      reviewReport: null,
+      startedAt: "",
+      finishedAt: "",
+    };
+  }
+
   async runSession(opts: SessionOptions): Promise<IterationResult> {
     const startTime = Date.now();
     const modelName = this.model ?? DEFAULT_CODEX_MODEL;
@@ -169,6 +203,8 @@ export class CodexDriver implements AgentDriver {
     let resultText = "";
     let usage: { input_tokens: number; output_tokens: number; cached_input_tokens: number } | null = null;
     let threadId: string | null = null;
+    let toolCalls = 0;
+    let maxTurnsExceeded = false;
 
     try {
       const streamedTurn = await thread.runStreamed(fullPrompt, {
@@ -176,6 +212,17 @@ export class CodexDriver implements AgentDriver {
       });
 
       for await (const event of streamedTurn.events) {
+        if (maxTurnsExceeded) {
+          // After breach, consume only terminal events so `usage` metrics
+          // from turn.completed are preserved. Skip item.* events to prevent
+          // toolCalls overshoot and stale UI emissions after abort.
+          if (event.type === "turn.completed") {
+            usage = event.usage;
+            break;
+          }
+          if (event.type === "turn.failed" || event.type === "error") break;
+          continue;
+        }
         switch (event.type) {
           case "thread.started":
             threadId = (event as { thread_id: string }).thread_id;
@@ -205,6 +252,33 @@ export class CodexDriver implements AgentDriver {
           }
           case "item.completed": {
             const item = event.item;
+            // Tool-call accounting: only actual tool invocations count toward
+            // maxTurns. agent_message/reasoning/error items are excluded.
+            if (
+              item.type === "command_execution" ||
+              item.type === "file_change" ||
+              item.type === "mcp_tool_call" ||
+              item.type === "web_search"
+            ) {
+              toolCalls++;
+              // Emit live turn count for UI indicator BEFORE the abort check
+              // so the breaching N/N value reaches the UI before the retry.
+              logger.sendToLog({
+                type: "agent:turn_count",
+                numTurns: toolCalls,
+                maxTurns: opts.maxTurns ?? 0,
+                model: modelName,
+                unitId: opts.unitId,
+              });
+              if (opts.maxTurns && toolCalls >= opts.maxTurns && !maxTurnsExceeded) {
+                maxTurnsExceeded = true;
+                const err = new MaxTurnsExceededError(opts.maxTurns);
+                if (opts.abortController) {
+                  opts.abortController.abort(err);
+                }
+                break; // exit switch; top-of-loop guard exits for-await
+              }
+            }
             if (item.type === "agent_message") {
               resultText += item.text;
               logger.logAssistant(item.text);
@@ -249,13 +323,50 @@ export class CodexDriver implements AgentDriver {
             throw new Error(event.message);
         }
       }
+
+      if (maxTurnsExceeded) {
+        const breachLimit = opts.maxTurns ?? 0;
+        return this.buildMaxTurnsResult({
+          maxTurns: breachLimit,
+          startTime,
+          toolCalls,
+          resultText,
+          usage,
+          modelName,
+        });
+      }
     } catch (err: unknown) {
+      // Detect our own abort even when the SDK wraps or replaces the reason.
+      // abortController.abort(err) may surface as:
+      //   - the MaxTurnsExceededError itself (direct throw)
+      //   - a DOMException AbortError whose signal.reason IS our error
+      //   - some other thrown Error while maxTurnsExceeded flag is already set
+      const reason = opts.abortController?.signal.reason;
+      const isOurBreach =
+        maxTurnsExceeded ||
+        err instanceof MaxTurnsExceededError ||
+        reason instanceof MaxTurnsExceededError;
+      if (isOurBreach) {
+        const breachLimit =
+          (err instanceof MaxTurnsExceededError && err.maxTurns) ||
+          (reason instanceof MaxTurnsExceededError && reason.maxTurns) ||
+          opts.maxTurns ||
+          0;
+        return this.buildMaxTurnsResult({
+          maxTurns: breachLimit,
+          startTime,
+          toolCalls,
+          resultText,
+          usage,
+          modelName,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       return {
         signal: { type: "error", message },
         durationMs: Date.now() - startTime,
         costUsd: 0,
-        numTurns: 0,
+        numTurns: Math.max(0, toolCalls),
         resultText: "",
         inputTokens: 0,
         outputTokens: 0,
@@ -278,7 +389,7 @@ export class CodexDriver implements AgentDriver {
       signal,
       durationMs: Date.now() - startTime,
       costUsd: 0,
-      numTurns: 1,
+      numTurns: Math.max(1, toolCalls),
       resultText,
       inputTokens: usage?.input_tokens ?? 0,
       outputTokens: usage?.output_tokens ?? 0,

@@ -124,3 +124,15 @@ export function parseSignal(text: string): AgentSignal {
   }
   return { type: "none" };
 }
+
+/**
+ * Thrown (via AbortController.abort) when a driver hits its `maxTurns` limit.
+ * Drivers detect this in their abort handler to distinguish self-imposed
+ * termination from external cancellation, allowing the loop to be retried.
+ */
+export class MaxTurnsExceededError extends Error {
+  constructor(public readonly maxTurns: number) {
+    super(`Max turns exceeded (${maxTurns})`);
+    this.name = "MaxTurnsExceeded";
+  }
+}

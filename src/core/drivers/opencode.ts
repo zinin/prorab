@@ -103,6 +103,12 @@ interface OpenCodeContext {
   unitId: string;
   /** Context window resolved from providers API (0 = not resolved). */
   resolvedContextWindow: number;
+  /** Max agentic turns; 0 means unlimited. */
+  maxTurns: number;
+  /** Set once we have sent session.abort — subsequent SSE events must be ignored. */
+  aborted: boolean;
+  /** True when abort reason was maxTurns breach — result built with signal: none + marker. */
+  maxTurnsExceeded: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +432,11 @@ export class OpenCodeDriver implements AgentDriver {
         if (opts.abortController?.signal.aborted) break;
 
         const shouldBreak = this.processEvent(event, ctx);
+        // maxTurns breach wins the race over any session.error that may be
+        // synthesized by the server in response to our client-initiated abort.
+        // Without this check, handleSessionError would set ctx.errorResult and
+        // we'd return a hard error instead of the fail-soft signal:none.
+        if (ctx.maxTurnsExceeded) break;
         if (ctx.errorResult) return ctx.errorResult;
         if (shouldBreak) break;
       }
@@ -437,6 +448,25 @@ export class OpenCodeDriver implements AgentDriver {
 
       // 5. Fetch final metrics from session.messages()
       await this.fetchFinalMetrics(ctx);
+
+      // 5b. maxTurns breach: signal:none + marker + preserved metrics.
+      // We deliberately skip parseSignal here — the agent didn't get to emit
+      // <task-complete>/<task-blocked>, and run.ts treats signal:none as a
+      // retry candidate. errorResult() would zero our hard-earned tokens/cost
+      // so we use buildIterationResult() directly.
+      if (ctx.maxTurnsExceeded) {
+        const marker = `Max turns exceeded (${ctx.maxTurns})`;
+        console.error(`  !!! ${marker} — retrying !!!`);
+        const sseText = Array.from(ctx.textPartAccumulator.values()).join("\n");
+        const originalText = sseText || ctx.resultText;
+        const merged = originalText ? `${marker}\n${originalText}` : marker;
+        return this.buildIterationResult(
+          { ...ctx, resultText: merged },
+          { type: "none" },
+          null,
+          null,
+        );
+      }
 
       // 6. Build result — merge SSE text with fallback from session.messages()
       const sseText = Array.from(ctx.textPartAccumulator.values()).join("\n");
@@ -1082,6 +1112,9 @@ export class OpenCodeDriver implements AgentDriver {
       resultText: "",
       unitId: opts.unitId,
       resolvedContextWindow: 0,
+      maxTurns: opts.maxTurns,
+      aborted: false,
+      maxTurnsExceeded: false,
     };
   }
 
@@ -1268,6 +1301,7 @@ export class OpenCodeDriver implements AgentDriver {
     part: TextPart,
     ctx: OpenCodeContext,
   ): void {
+    if (ctx.aborted) return;
     ctx.textPartAccumulator.set(part.id, part.text);
 
     if (ctx.logger.isQuiet || !part.text.trim()) return;
@@ -1301,6 +1335,7 @@ export class OpenCodeDriver implements AgentDriver {
     part: Part,
     ctx: OpenCodeContext,
   ): void {
+    if (ctx.aborted) return;
     const toolPart = part as unknown as {
       id: string;
       tool: string;
@@ -1356,6 +1391,7 @@ export class OpenCodeDriver implements AgentDriver {
     part: Part,
     ctx: OpenCodeContext,
   ): void {
+    if (ctx.aborted) return;
     const sfp = part as unknown as {
       reason: string;
       cost: number;
@@ -1374,6 +1410,20 @@ export class OpenCodeDriver implements AgentDriver {
     ctx.cacheReadTokens += sfp.tokens.cache.read;
     ctx.cacheWriteTokens += sfp.tokens.cache.write;
     ctx.costUsd += sfp.cost;
+
+    // maxTurns enforcement: abort the live OpenCode session and flag the
+    // breach so runSession() builds a signal:none result with metrics
+    // preserved + "Max turns exceeded (N)" marker prepended to resultText.
+    // maxTurns === 0 means "no limit".
+    if (ctx.maxTurns && ctx.numTurns >= ctx.maxTurns && !ctx.aborted) {
+      ctx.aborted = true;
+      ctx.maxTurnsExceeded = true;
+      this.client?.session
+        .abort({ sessionID: ctx.sessionId! })
+        .catch(() => {});
+      // Suppress the terminal N/N turn-count blip — next retry resets cleanly.
+      return;
+    }
 
     if (ctx.logger.isVerbose) {
       const t = sfp.tokens;
@@ -1399,6 +1449,17 @@ export class OpenCodeDriver implements AgentDriver {
         unitId: ctx.unitId,
       });
     }
+
+    // Emit live turn count for UI indicator. We only reach here if the
+    // maxTurns breach branch above did NOT fire (it returns early to
+    // suppress the terminal N/N blip). Safe to emit unconditionally here.
+    ctx.logger.sendToLog({
+      type: "agent:turn_count",
+      numTurns: ctx.numTurns,
+      maxTurns: ctx.maxTurns,
+      model: ctx.model,
+      unitId: ctx.unitId,
+    });
   }
 
   // ---------------------------------------------------------------------------
