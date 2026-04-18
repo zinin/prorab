@@ -28,8 +28,22 @@ interface ClaudeContext {
   unitId: string;
   /** Maximum agentic turns from SessionOptions; mirrors SDK's maxTurns. */
   maxTurns: number;
-  /** Live counter incremented on each handleAssistant call (one per assistant SDK message). */
+  /** Live counter incremented per unique main-thread API call (deduped by message.id). */
   numApiCalls: number;
+  /**
+   * Anthropic API message IDs already counted toward numApiCalls. The SDK
+   * splits a single API response into one SDKAssistantMessage per content
+   * block (thinking / text / tool_use) when `message.content.length > 1`,
+   * and all splits share `message.id`. Without dedup the live turn indicator
+   * overshoots the SDK's `num_turns` (e.g. 210 vs 152) on turns rich in
+   * content blocks.
+   *
+   * Memory: bounded by the number of distinct main-thread API calls in one
+   * session (≤ maxTurns ≈ 200 in practice → ~10 KB). The Set lives on
+   * ClaudeContext, recreated by `createContext` per `runSession`, so there
+   * is no cross-session accumulation.
+   */
+  seenApiMessageIds: Set<string>;
   /** Tracks displayed tool_progress events (5s bucket throttle). */
   reportedTools: Set<string>;
 }
@@ -739,6 +753,7 @@ export class ClaudeDriver implements AgentDriver {
       unitId: opts.unitId,
       maxTurns: opts.maxTurns,
       numApiCalls: 0,
+      seenApiMessageIds: new Set<string>(),
       reportedTools: new Set(),
     };
   }
@@ -797,26 +812,47 @@ export class ClaudeDriver implements AgentDriver {
 
   /** Handle assistant message: extract text and tool_use content blocks. */
   private handleAssistant(msg: Record<string, unknown>, ctx: ClaudeContext): void {
+    const message = (msg as unknown as {
+      message: { id?: unknown; content: Array<Record<string, unknown>> };
+    }).message;
+
     // Live turn count for UI indicator. SDK only exposes num_turns at end of
     // session via the `result` message — too late for the live indicator.
-    // We maintain our own counter incremented per MAIN-thread assistant message.
-    // Sub-agent messages (Task tool workers) carry parent_tool_use_id !== null
-    // and must NOT be counted — SDK's maxTurns limit applies to the main thread,
-    // and counting sub-agents would overshoot the indicator (e.g. 268/200).
+    // We maintain our own counter incremented per MAIN-thread API call.
+    //
+    // Two dedup rules keep our count aligned with SDK's num_turns:
+    //   1. Sub-agent messages (Task tool workers) carry parent_tool_use_id !== null;
+    //      SDK's maxTurns limit applies to the main thread only, so they must NOT
+    //      be counted (would overshoot, e.g. 268/200).
+    //   2. The SDK splits a single API response into one SDKAssistantMessage per
+    //      content block (thinking / text / tool_use) when content.length > 1,
+    //      and all splits inherit `message.id`. Counting each split would overshoot
+    //      (e.g. 210/200 with real num_turns=152). Dedup on `message.id` so each
+    //      API round-trip contributes exactly one increment.
+    //
+    // Fallback: if `message.id` is missing (only happens in tests with stripped
+    // fixtures — `BetaMessage.id` is non-optional in the SDK), keep the old
+    // behavior — count once per assistant message. Tests without explicit `id`
+    // continue to work unchanged.
+    //
     // Only fires from runSession; startChat uses sdkMessageToChatEvents instead.
     if (msg.parent_tool_use_id == null) {
-      ctx.numApiCalls++;
-      ctx.logger.sendToLog({
-        type: "agent:turn_count",
-        numTurns: ctx.numApiCalls,
-        maxTurns: ctx.maxTurns,
-        model: ctx.model,
-        unitId: ctx.unitId,
-      });
+      const apiMessageId = typeof message.id === "string" ? message.id : null;
+      const alreadyCounted = apiMessageId !== null && ctx.seenApiMessageIds.has(apiMessageId);
+      if (!alreadyCounted) {
+        if (apiMessageId !== null) ctx.seenApiMessageIds.add(apiMessageId);
+        ctx.numApiCalls++;
+        ctx.logger.sendToLog({
+          type: "agent:turn_count",
+          numTurns: ctx.numApiCalls,
+          maxTurns: ctx.maxTurns,
+          model: ctx.model,
+          unitId: ctx.unitId,
+        });
+      }
     }
 
-    const content = (msg as unknown as { message: { content: Array<Record<string, unknown>> } }).message.content;
-    for (const block of content) {
+    for (const block of message.content) {
       if (block.type === "text") {
         ctx.resultText += block.text as string;
         ctx.logger.logAssistant(String(block.text));

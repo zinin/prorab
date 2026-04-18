@@ -201,6 +201,92 @@ describe("ClaudeDriver — agent:turn_count emission", () => {
     expect(turns.map((e) => e.numTurns)).toEqual([1, 2]);
   });
 
+  it("counts split-block assistant messages with shared message.id as one turn", async () => {
+    // The SDK splits a single API response into N separate SDKAssistantMessage
+    // events — one per content block (thinking / text / tool_use), triggered
+    // when Message.content.length > 1 (see `_NY` / `b98` in the SDK). All
+    // splits inherit `message.id` via spread. Counting each split as its own
+    // turn caused the live indicator to overshoot the SDK's num_turns (e.g.
+    // 210 indicator vs 152 actual) on turns rich in content blocks.
+    //
+    // Dedup by message.id — three splits sharing "msg_01" count as one turn,
+    // a fresh API call with "msg_02" counts as the second.
+    sdkRunMessages = [
+      { type: "system", subtype: "init", model: "claude-opus-4-6", tools: [] },
+      // API call #1 split into 3 SDKAssistantMessages — same message.id.
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_01", content: [{ type: "thinking", thinking: "pondering" }] },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_01", content: [{ type: "text", text: "reply" }] },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          id: "msg_01",
+          content: [{ type: "tool_use", name: "Read", input: { file_path: "/x" } }],
+        },
+      },
+      // API call #2 — separate message.id, single block (not split).
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { id: "msg_02", content: [{ type: "text", text: "after tool" }] },
+      },
+      {
+        type: "result", subtype: "success", duration_ms: 0, total_cost_usd: 0, num_turns: 2, modelUsage: {}, result: "",
+      },
+    ];
+
+    const events: LogEvent[] = [];
+    const driver = new ClaudeDriver();
+    await driver.runSession({
+      prompt: "p", systemPrompt: "s", cwd: "/tmp", maxTurns: 10, verbosity: "quiet", unitId: "u1",
+      onLog: (e) => events.push(e),
+    });
+
+    const turns = events.filter(
+      (e): e is Extract<LogEvent, { type: "agent:turn_count" }> => e.type === "agent:turn_count",
+    );
+    // Two distinct API calls → two increments, matching SDK's num_turns.
+    expect(turns.map((e) => e.numTurns)).toEqual([1, 2]);
+  });
+
+  it("falls back to per-message counting when message.id is missing", async () => {
+    // Backward-compat path: `BetaMessage.id` is non-optional in the SDK, but
+    // older test fixtures (and any future SDK regression) may omit it. When
+    // `message.id` is absent or non-string, dedup is impossible — we count
+    // every main-thread assistant once, matching pre-fix behavior.
+    sdkRunMessages = [
+      { type: "system", subtype: "init", model: "claude-opus-4-6", tools: [] },
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "no id #1" }] } },
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "no id #2" }] } },
+      // Non-string id (defensive coverage of `typeof === "string"` guard).
+      { type: "assistant", parent_tool_use_id: null, message: { id: 42, content: [{ type: "text", text: "non-string id" }] } },
+      {
+        type: "result", subtype: "success", duration_ms: 0, total_cost_usd: 0, num_turns: 3, modelUsage: {}, result: "",
+      },
+    ];
+
+    const events: LogEvent[] = [];
+    const driver = new ClaudeDriver();
+    await driver.runSession({
+      prompt: "p", systemPrompt: "s", cwd: "/tmp", maxTurns: 10, verbosity: "quiet", unitId: "u1",
+      onLog: (e) => events.push(e),
+    });
+
+    const turns = events.filter(
+      (e): e is Extract<LogEvent, { type: "agent:turn_count" }> => e.type === "agent:turn_count",
+    );
+    // All three messages count — no dedup possible without a string id.
+    expect(turns.map((e) => e.numTurns)).toEqual([1, 2, 3]);
+  });
+
   it("does NOT emit agent:turn_count during startChat", async () => {
     sdkChatQueue = new AsyncQueue<Record<string, unknown>>();
     const events: LogEvent[] = [];
