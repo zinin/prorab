@@ -28,7 +28,7 @@ interface ClaudeContext {
   unitId: string;
   /** Maximum agentic turns from SessionOptions; mirrors SDK's maxTurns. */
   maxTurns: number;
-  /** Live counter incremented on each handleAssistant call (one per assistant SDK message). */
+  /** Live counter incremented per unique main-thread API call (deduped by message.id). */
   numApiCalls: number;
   /**
    * Anthropic API message IDs already counted toward numApiCalls. The SDK
@@ -37,6 +37,11 @@ interface ClaudeContext {
    * and all splits share `message.id`. Without dedup the live turn indicator
    * overshoots the SDK's `num_turns` (e.g. 210 vs 152) on turns rich in
    * content blocks.
+   *
+   * Memory: bounded by the number of distinct main-thread API calls in one
+   * session (≤ maxTurns ≈ 200 in practice → ~10 KB). The Set lives on
+   * ClaudeContext, recreated by `createContext` per `runSession`, so there
+   * is no cross-session accumulation.
    */
   seenApiMessageIds: Set<string>;
   /** Tracks displayed tool_progress events (5s bucket throttle). */
@@ -807,6 +812,10 @@ export class ClaudeDriver implements AgentDriver {
 
   /** Handle assistant message: extract text and tool_use content blocks. */
   private handleAssistant(msg: Record<string, unknown>, ctx: ClaudeContext): void {
+    const message = (msg as unknown as {
+      message: { id?: unknown; content: Array<Record<string, unknown>> };
+    }).message;
+
     // Live turn count for UI indicator. SDK only exposes num_turns at end of
     // session via the `result` message — too late for the live indicator.
     // We maintain our own counter incremented per MAIN-thread API call.
@@ -821,14 +830,14 @@ export class ClaudeDriver implements AgentDriver {
     //      (e.g. 210/200 with real num_turns=152). Dedup on `message.id` so each
     //      API round-trip contributes exactly one increment.
     //
-    // Fallback: if `message.id` is missing (malformed fixture or future SDK change),
-    // keep the old behavior — count once per assistant message. Tests without
-    // explicit `id` continue to work unchanged.
+    // Fallback: if `message.id` is missing (only happens in tests with stripped
+    // fixtures — `BetaMessage.id` is non-optional in the SDK), keep the old
+    // behavior — count once per assistant message. Tests without explicit `id`
+    // continue to work unchanged.
     //
     // Only fires from runSession; startChat uses sdkMessageToChatEvents instead.
     if (msg.parent_tool_use_id == null) {
-      const apiMessage = msg.message as { id?: unknown } | undefined;
-      const apiMessageId = typeof apiMessage?.id === "string" ? apiMessage.id : null;
+      const apiMessageId = typeof message.id === "string" ? message.id : null;
       const alreadyCounted = apiMessageId !== null && ctx.seenApiMessageIds.has(apiMessageId);
       if (!alreadyCounted) {
         if (apiMessageId !== null) ctx.seenApiMessageIds.add(apiMessageId);
@@ -843,8 +852,7 @@ export class ClaudeDriver implements AgentDriver {
       }
     }
 
-    const content = (msg as unknown as { message: { content: Array<Record<string, unknown>> } }).message.content;
-    for (const block of content) {
+    for (const block of message.content) {
       if (block.type === "text") {
         ctx.resultText += block.text as string;
         ctx.logger.logAssistant(String(block.text));

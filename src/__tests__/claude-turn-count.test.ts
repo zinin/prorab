@@ -257,6 +257,36 @@ describe("ClaudeDriver — agent:turn_count emission", () => {
     expect(turns.map((e) => e.numTurns)).toEqual([1, 2]);
   });
 
+  it("falls back to per-message counting when message.id is missing", async () => {
+    // Backward-compat path: `BetaMessage.id` is non-optional in the SDK, but
+    // older test fixtures (and any future SDK regression) may omit it. When
+    // `message.id` is absent or non-string, dedup is impossible — we count
+    // every main-thread assistant once, matching pre-fix behavior.
+    sdkRunMessages = [
+      { type: "system", subtype: "init", model: "claude-opus-4-6", tools: [] },
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "no id #1" }] } },
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "no id #2" }] } },
+      // Non-string id (defensive coverage of `typeof === "string"` guard).
+      { type: "assistant", parent_tool_use_id: null, message: { id: 42, content: [{ type: "text", text: "non-string id" }] } },
+      {
+        type: "result", subtype: "success", duration_ms: 0, total_cost_usd: 0, num_turns: 3, modelUsage: {}, result: "",
+      },
+    ];
+
+    const events: LogEvent[] = [];
+    const driver = new ClaudeDriver();
+    await driver.runSession({
+      prompt: "p", systemPrompt: "s", cwd: "/tmp", maxTurns: 10, verbosity: "quiet", unitId: "u1",
+      onLog: (e) => events.push(e),
+    });
+
+    const turns = events.filter(
+      (e): e is Extract<LogEvent, { type: "agent:turn_count" }> => e.type === "agent:turn_count",
+    );
+    // All three messages count — no dedup possible without a string id.
+    expect(turns.map((e) => e.numTurns)).toEqual([1, 2, 3]);
+  });
+
   it("does NOT emit agent:turn_count during startChat", async () => {
     sdkChatQueue = new AsyncQueue<Record<string, unknown>>();
     const events: LogEvent[] = [];
