@@ -1,3 +1,5 @@
+import path from "node:path";
+import { createRequire } from "node:module";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKUserMessage, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentSignal, IterationResult, ModelEntry } from "../../types.js";
@@ -6,6 +8,41 @@ import { parseSignal, parseReport, parseReviewReport } from "./types.js";
 import { dim, truncate, SessionLogger } from "./logging.js";
 import { getContextWindow, setContextWindow } from "./context-window.js";
 import { AsyncQueue } from "./async-queue.js";
+
+/**
+ * Resolve the correct Claude Code native binary on Linux.
+ *
+ * The SDK's built-in selection (sdk.mjs:W7) tries the musl package before the
+ * glibc one and returns whichever resolves first. If both optional packages
+ * end up in node_modules (stale installs, Docker layers, forced installs),
+ * the musl binary wins on glibc hosts and spawn fails with ENOENT because
+ * /lib/ld-musl-x86_64.so.1 is absent. We detect the host libc via Node's
+ * process.report and pin `pathToClaudeCodeExecutable` to the matching package
+ * so the SDK skips its guessing step entirely. Returns undefined on
+ * non-Linux, unsupported arch, or when the resolved package is missing.
+ */
+function resolveClaudeCodeExecutable(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  const arch = process.arch;
+  if (arch !== "x64" && arch !== "arm64") return undefined;
+
+  const report = (process.report?.getReport?.() ?? {}) as {
+    header?: { glibcVersionRuntime?: string };
+  };
+  const isGlibc = Boolean(report.header?.glibcVersionRuntime);
+  const suffix = isGlibc ? "" : "-musl";
+  const pkgName = `@anthropic-ai/claude-agent-sdk-linux-${arch}${suffix}`;
+
+  const req = createRequire(import.meta.url);
+  try {
+    const pkgJson = req.resolve(`${pkgName}/package.json`);
+    return path.join(path.dirname(pkgJson), "claude");
+  } catch {
+    return undefined;
+  }
+}
+
+const CLAUDE_CODE_EXECUTABLE = resolveClaudeCodeExecutable();
 
 /** Detect AbortError from the SDK (DOMException or Error with name "AbortError"). */
 function isAbortError(err: unknown): boolean {
@@ -119,6 +156,9 @@ export class ClaudeDriver implements AgentDriver {
     if (opts.env) {
       queryOptions.env = opts.env;
     }
+    if (CLAUDE_CODE_EXECUTABLE) {
+      queryOptions.pathToClaudeCodeExecutable = CLAUDE_CODE_EXECUTABLE;
+    }
 
     // --- Start SDK session ---
     const session = query({
@@ -158,6 +198,7 @@ export class ClaudeDriver implements AgentDriver {
     const session = query({ prompt: "", options: {
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
+      ...(CLAUDE_CODE_EXECUTABLE ? { pathToClaudeCodeExecutable: CLAUDE_CODE_EXECUTABLE } : {}),
     } });
     try {
       const models = await session.supportedModels();
@@ -249,6 +290,9 @@ export class ClaudeDriver implements AgentDriver {
     }
     if (opts.env) {
       queryOptions.env = opts.env;
+    }
+    if (CLAUDE_CODE_EXECUTABLE) {
+      queryOptions.pathToClaudeCodeExecutable = CLAUDE_CODE_EXECUTABLE;
     }
 
     // Start SDK session eagerly — it blocks on the prompt iterable
