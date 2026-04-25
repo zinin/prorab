@@ -117,13 +117,15 @@ export function acquireLock(cwd: string): void {
       continue;
     }
 
-    // Self-pid short-circuit runs FIRST, before the btime gate, so that a
-    // wall-clock jump (NTP correction, manual adjustment) cannot drag the
-    // os.uptime() fallback's bootSec past our own startedAt and falsely
-    // classify our own live lock as predating boot.  Trade-off: a post-reboot
-    // stale lock whose dead writer's PID coincidentally matches ours (≈1/65536
-    // per reboot) will now throw instead of being auto-cleaned — operators can
-    // manually remove the lock file in that case.
+    // Self-pid short-circuit runs FIRST so we never overwrite our own live
+    // lock via any stale-detection branch below.  Without it, a caller whose
+    // process.cwd() differs from `cwd` (e.g. a vitest worker acquiring on a
+    // tempDir) would land in ownership === "stranger" and silently overwrite
+    // its own lock; a wall-clock skew that drags bootSec past our own
+    // startedAt would do the same via the btime gate.  Trade-off: a
+    // post-reboot stale lock whose dead writer's PID coincidentally matches
+    // ours (≈1/32768 per reboot) will throw instead of being auto-cleaned —
+    // operators can manually remove the lock file in that case.
     if (data.pid === process.pid) {
       throw new Error(
         `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}) ` +
@@ -132,15 +134,7 @@ export function acquireLock(cwd: string): void {
       );
     }
 
-    const bootSec = getBootTime();
-    const startedSec = Date.parse(data.startedAt) / 1000;
-
-    if (bootSec !== null && Number.isFinite(startedSec) && startedSec < bootSec) {
-      console.warn(
-        `Warning: removing stale lock (PID was ${data.pid}, predates boot — ` +
-        `startedAt=${data.startedAt}, boot=${new Date(bootSec * 1000).toISOString()}).`
-      );
-    } else if (!isProcessAlive(data.pid)) {
+    if (!isProcessAlive(data.pid)) {
       console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
     } else {
       const ownership = isOwningProcess(data.pid, cwd);
@@ -148,8 +142,31 @@ export function acquireLock(cwd: string): void {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, reused by non-prorab process).`);
       } else if (ownership === "died") {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, owner exited during ownership check).`);
+      } else if (ownership === "unknown") {
+        // We cannot verify ownership (non-Linux, EACCES on /proc, missing
+        // Tgid field on a custom kernel).  Fall back to a btime gate as the
+        // ONLY last-resort post-reboot recovery path — but never use btime
+        // to override an "owns" verdict, because wall-clock skew (NTP
+        // correction, suspended VM, manual clock change, container drift)
+        // can falsely place a live owner's startedAt before bootSec.
+        const bootSec = getBootTime();
+        const startedSec = Date.parse(data.startedAt) / 1000;
+        if (bootSec !== null && Number.isFinite(startedSec) && startedSec < bootSec) {
+          console.warn(
+            `Warning: removing stale lock (PID was ${data.pid}, predates boot — ` +
+            `startedAt=${data.startedAt}, boot=${new Date(bootSec * 1000).toISOString()}).`
+          );
+        } else {
+          throw new Error(
+            `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
+            `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
+          );
+        }
       } else {
-        // "owns" (real conflict) or "unknown" (cannot verify) → conservative throw.
+        // ownership === "owns" → genuine cross-process conflict on Linux.
+        // Btime is intentionally NOT consulted here: even if startedAt
+        // predates bootSec, a verified live owner with matching Tgid+cwd
+        // outranks any wall-clock-derived heuristic.
         throw new Error(
           `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
           `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`

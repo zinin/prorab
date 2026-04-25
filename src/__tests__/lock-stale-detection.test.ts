@@ -79,15 +79,25 @@ describe("acquireLock — stale detection", () => {
     killSpy.mockRestore();
   });
 
-  it("removes lock when startedAt predates boot time (btime from /proc/stat)", () => {
+  it("removes lock when startedAt predates boot time (btime from /proc/stat) and ownership is unknown", () => {
+    // Btime gate is now last-resort: it fires only when the PID is alive
+    // AND ownership is "unknown" (non-Linux, EACCES, missing Tgid).  Here
+    // we simulate "unknown" via a custom-kernel /proc/<pid>/status that
+    // lacks a Tgid field while keeping kill(0) successful.
+    const fakePid = 99999;
     writeLock(tempDir, {
-      pid: 99999,
+      pid: fakePid,
       startedAt: "2020-01-01T00:00:00.000Z",
     });
 
-    // Recent btime (2023-11-14 22:13:20 UTC) — well after the lock's startedAt
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
     readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
-      if (path === "/proc/stat") return "btime 1700000000\ncpu  1 2 3\n";
+      const p = String(path);
+      // Recent btime (2023-11-14 22:13:20 UTC) — well after the lock's startedAt
+      if (p === "/proc/stat") return "btime 1700000000\ncpu  1 2 3\n";
+      // Status without Tgid → ownership "unknown" → falls back to btime gate
+      if (p === `/proc/${fakePid}/status`) return "Name: weirdproc\nState: S\nPid:\t99999\n";
       return actualReadFileSync(path, ...(args as []));
     }) as typeof readFileSync);
 
@@ -98,19 +108,25 @@ describe("acquireLock — stale detection", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("predates boot"));
   });
 
-  it("removes lock when startedAt predates boot time (btime via os.uptime fallback)", () => {
+  it("removes lock when startedAt predates boot time (btime via os.uptime fallback) and ownership is unknown", () => {
+    const fakePid = 99999;
     writeLock(tempDir, {
-      pid: 99999,
+      pid: fakePid,
       startedAt: "2020-01-01T00:00:00.000Z",
     });
 
-    // /proc/stat unreadable — forces fallback
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
     readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
-      if (path === "/proc/stat") {
+      const p = String(path);
+      // /proc/stat unreadable — forces fallback to os.uptime()
+      if (p === "/proc/stat") {
         const err = new Error("ENOENT") as NodeJS.ErrnoException;
         err.code = "ENOENT";
         throw err;
       }
+      // Status without Tgid → ownership "unknown"
+      if (p === `/proc/${fakePid}/status`) return "Name: weirdproc\nState: S\nPid:\t99999\n";
       return actualReadFileSync(path, ...(args as []));
     }) as typeof readFileSync);
 
@@ -314,6 +330,43 @@ describe("acquireLock — stale detection", () => {
     expect(() => acquireLock(tempDir)).toThrow(/already running/);
     // Lock file must be preserved on throw, not silently overwritten.
     expect(readLockJson(tempDir).pid).toBe(process.pid);
+  });
+
+  it("throws when ownership is 'owns' even if startedAt predates boot (clock-skew immunity for verified live owner)", () => {
+    // Regression for codex-connector PR #3 review (2026-04-25):
+    // a wall-clock jump (NTP correction, suspended VM, manual change) can
+    // make a live owner's startedAt look earlier than the current bootSec.
+    // Prior to this fix, the btime gate ran before ownership verification
+    // and would unlink the live lock, allowing two prorab instances to run
+    // concurrently.  After the fix, a verified "owns" verdict is final and
+    // btime is never consulted.
+    const fakePid = 99999990;
+    writeLock(tempDir, {
+      pid: fakePid,
+      startedAt: "2020-01-01T00:00:00.000Z",   // looks predated under any plausible bootSec
+    });
+
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      const p = String(path);
+      if (p === "/proc/stat") return "btime 1700000000\ncpu  1 2 3\n";
+      // Tgid match → ownership flow proceeds to cwd check
+      if (p === `/proc/${fakePid}/status`) return `Name: prorab\nTgid:\t${fakePid}\nPid:\t${fakePid}\n`;
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    readlinkMock.mockImplementation(((path: Parameters<typeof readlinkSync>[0], ...args: unknown[]) => {
+      // cwd matches → ownership "owns"
+      if (String(path) === `/proc/${fakePid}/cwd`) return realpathSync(tempDir);
+      return actualReadlinkSync(path, ...(args as []));
+    }) as typeof readlinkSync);
+
+    expect(() => acquireLock(tempDir)).toThrow(/already running/);
+    // Live owner's lock must be preserved — no silent overwrite.
+    expect(readLockJson(tempDir).pid).toBe(fakePid);
+    // No predates-boot warn: btime gate is intentionally bypassed for "owns".
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("predates boot"));
   });
 
   it("self-pid short-circuit beats btime gate (clock-jump immunity)", () => {
