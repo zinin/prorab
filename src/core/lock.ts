@@ -87,60 +87,90 @@ function isOwningProcess(pid: number, lockedCwd: string): OwnershipResult {
   }
 }
 
+const LOCK_ACQUIRE_MAX_ATTEMPTS = 3;
+
 export function acquireLock(cwd: string): void {
   const path = lockPath(cwd);
+  const newContent = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
 
-  if (existsSync(path)) {
+  for (let attempt = 0; attempt < LOCK_ACQUIRE_MAX_ATTEMPTS; attempt++) {
+    // Atomic exclusive create — POSIX O_EXCL via Node's "wx" flag.  Fails
+    // with EEXIST if the file already exists.  This is the only point where
+    // ownership of the lock is established; two concurrent acquirers cannot
+    // both succeed here.
+    try {
+      writeFileSync(path, newContent, { flag: "wx" });
+      ensureLockInGitignore(cwd);
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+
+    // EEXIST — read the existing lock, classify, decide.
     let data: { pid: number; startedAt: string } | undefined;
     try {
       const raw = readFileSync(path, "utf-8");
       data = JSON.parse(raw) as { pid: number; startedAt: string };
     } catch {
       console.warn("Warning: removing corrupt lock file.");
+      removeLockIgnoreMissing(path);
+      continue;
     }
 
-    if (data) {
-      // Self-pid short-circuit runs FIRST, before the btime gate, so that a
-      // wall-clock jump (NTP correction, manual adjustment) cannot drag the
-      // os.uptime() fallback's bootSec past our own startedAt and falsely
-      // classify our own live lock as predating boot.  Trade-off: a post-reboot
-      // stale lock whose dead writer's PID coincidentally matches ours (≈1/65536
-      // per reboot) will now throw instead of being auto-cleaned — operators can
-      // manually remove the lock file in that case.
-      if (data.pid === process.pid) {
+    // Self-pid short-circuit runs FIRST, before the btime gate, so that a
+    // wall-clock jump (NTP correction, manual adjustment) cannot drag the
+    // os.uptime() fallback's bootSec past our own startedAt and falsely
+    // classify our own live lock as predating boot.  Trade-off: a post-reboot
+    // stale lock whose dead writer's PID coincidentally matches ours (≈1/65536
+    // per reboot) will now throw instead of being auto-cleaned — operators can
+    // manually remove the lock file in that case.
+    if (data.pid === process.pid) {
+      throw new Error(
+        `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
+        `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
+      );
+    }
+
+    const bootSec = getBootTime();
+    const startedSec = Date.parse(data.startedAt) / 1000;
+
+    if (bootSec !== null && Number.isFinite(startedSec) && startedSec < bootSec) {
+      console.warn(`Warning: removing stale lock (PID was ${data.pid}, predates boot).`);
+    } else if (!isProcessAlive(data.pid)) {
+      console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
+    } else {
+      const ownership = isOwningProcess(data.pid, cwd);
+      if (ownership === "stranger") {
+        console.warn(`Warning: removing stale lock (PID was ${data.pid}, reused by non-prorab process).`);
+      } else if (ownership === "died") {
+        console.warn(`Warning: removing stale lock (PID was ${data.pid}, owner exited during ownership check).`);
+      } else {
+        // "owns" (real conflict) or "unknown" (cannot verify) → conservative throw.
         throw new Error(
           `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
           `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
         );
       }
-
-      const bootSec = getBootTime();
-      const startedSec = Date.parse(data.startedAt) / 1000;
-
-      if (bootSec !== null && Number.isFinite(startedSec) && startedSec < bootSec) {
-        console.warn(`Warning: removing stale lock (PID was ${data.pid}, predates boot).`);
-      } else if (!isProcessAlive(data.pid)) {
-        console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
-      } else {
-        const ownership = isOwningProcess(data.pid, cwd);
-        if (ownership === "stranger") {
-          console.warn(`Warning: removing stale lock (PID was ${data.pid}, reused by non-prorab process).`);
-        } else if (ownership === "died") {
-          console.warn(`Warning: removing stale lock (PID was ${data.pid}, owner exited during ownership check).`);
-        } else {
-          // "owns" (real conflict) or "unknown" (cannot verify) → conservative throw.
-          throw new Error(
-            `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
-            `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
-          );
-        }
-      }
     }
+
+    // Stale → remove and retry the exclusive create.  If a concurrent acquirer
+    // unlinked first, our unlink ENOENTs harmlessly; if a concurrent acquirer
+    // wins the next exclusive create, our retry will EEXIST and re-evaluate
+    // against their fresh lock (typically resolving to "owns" → throw).
+    removeLockIgnoreMissing(path);
   }
 
-  writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  throw new Error(
+    `Failed to acquire lock at ${path} after ${LOCK_ACQUIRE_MAX_ATTEMPTS} attempts (concurrent contention).`
+  );
+}
 
-  ensureLockInGitignore(cwd);
+function removeLockIgnoreMissing(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }
 
 const GITIGNORE_PATTERN = `.taskmaster/${LOCK_FILENAME}`;
