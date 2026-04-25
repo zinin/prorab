@@ -123,4 +123,18 @@ describe("acquireLock — stale detection", () => {
     expect(data.pid).toBe(process.pid);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("predates boot"));
   });
+
+  it("removes lock when PID is dead and startedAt is post-boot", () => {
+    // startedAt is in the future of any plausible boot time
+    writeLock(tempDir, {
+      pid: 99999998,
+      startedAt: new Date(Date.now() - 60_000).toISOString(),  // 1 minute ago
+    });
+
+    acquireLock(tempDir);
+
+    const data = readLockJson(tempDir);
+    expect(data.pid).toBe(process.pid);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("process is gone"));
+  });
 });
