@@ -216,4 +216,26 @@ describe("acquireLock — stale detection", () => {
     expect(data.pid).toBe(process.pid);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reused by non-prorab"));
   });
+
+  it("throws when PID is alive AND cwd matches AND Tgid matches", () => {
+    const fakePid = 99999994;
+    writeLock(tempDir, {
+      pid: fakePid,
+      startedAt: new Date().toISOString(),
+    });
+
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      if (String(path) === `/proc/${fakePid}/status`) return `Name: prorab\nTgid:\t${fakePid}\nPid:\t${fakePid}\n`;
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    readlinkMock.mockImplementation(((path: Parameters<typeof readlinkSync>[0], ...args: unknown[]) => {
+      if (String(path) === `/proc/${fakePid}/cwd`) return realpathSync(tempDir);
+      return actualReadlinkSync(path, ...(args as []));
+    }) as typeof readlinkSync);
+
+    expect(() => acquireLock(tempDir)).toThrow(/already running/);
+  });
 });
