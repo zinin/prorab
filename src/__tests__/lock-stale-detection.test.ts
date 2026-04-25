@@ -97,4 +97,30 @@ describe("acquireLock — stale detection", () => {
     expect(data.pid).toBe(process.pid);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("predates boot"));
   });
+
+  it("removes lock when startedAt predates boot time (btime via os.uptime fallback)", () => {
+    writeLock(tempDir, {
+      pid: 99999,
+      startedAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    // /proc/stat unreadable — forces fallback
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      if (path === "/proc/stat") {
+        const err = new Error("ENOENT") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    // Uptime = 60 seconds → derived btime = now − 60s. Lock startedAt is 2020 → far before.
+    uptimeMock.mockReturnValue(60);
+
+    acquireLock(tempDir);
+
+    const data = readLockJson(tempDir);
+    expect(data.pid).toBe(process.pid);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("predates boot"));
+  });
 });

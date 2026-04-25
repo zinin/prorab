@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, appendFileSync } from "node:fs";
+import { uptime as osUptime } from "node:os";
 import { join } from "node:path";
 
 export const LOCK_FILENAME = "prorab.lock";
@@ -30,8 +31,16 @@ function getBootTime(): number | null {
         if (Number.isFinite(n) && n > 0) return n;
       }
     } catch {
-      // fall through to fallback in a later task
+      // fall through to cross-platform fallback
     }
+  }
+  try {
+    const uptimeSec = osUptime();
+    if (Number.isFinite(uptimeSec) && uptimeSec > 0) {
+      return Math.floor(Date.now() / 1000 - uptimeSec);
+    }
+  } catch {
+    // fall through to null
   }
   return null;
 }
