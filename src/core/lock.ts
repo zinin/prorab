@@ -72,6 +72,13 @@ function isOwningProcess(pid: number, lockedCwd: string): OwnershipResult {
     if (!tgidMatch) return "unknown";                  // missing field → cannot tell
     if (Number(tgidMatch[1]) !== pid) return "stranger";  // thread, not the owning process
 
+    // Known limitation: string-equality cwd comparison can produce
+    // false negatives under bind mounts or path aliases (e.g. /projects/foo
+    // bind-mounted to /srv/foo), and false positives if prorab ever calls
+    // process.chdir() at runtime (currently it does not).  st_dev+st_ino
+    // comparison would be more robust — left as future hardening; the
+    // conservative-throw fallback ensures we never silently steal in the
+    // unknown case.
     const procCwd = readlinkSync(`/proc/${pid}/cwd`);
     return procCwd === lockedReal ? "owns" : "stranger";
   } catch (err) {
