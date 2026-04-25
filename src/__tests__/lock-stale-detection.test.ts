@@ -170,8 +170,43 @@ describe("acquireLock — stale detection", () => {
 
     killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
 
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      const p = String(path);
+      // Tgid matches PID → not a thread, proceed to cwd check
+      if (p === "/proc/99999996/status") return "Name: other\nTgid:\t99999996\nPid:\t99999996\n";
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
     readlinkMock.mockImplementation(((path: Parameters<typeof readlinkSync>[0], ...args: unknown[]) => {
       if (String(path) === "/proc/99999996/cwd") return "/some/other/dir";
+      return actualReadlinkSync(path, ...(args as []));
+    }) as typeof readlinkSync);
+
+    acquireLock(tempDir);
+
+    const data = readLockJson(tempDir);
+    expect(data.pid).toBe(process.pid);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reused by non-prorab"));
+  });
+
+  it("removes lock when PID belongs to a thread (Tgid !== pid) even if cwd matches", () => {
+    writeLock(tempDir, {
+      pid: 99999995,
+      startedAt: new Date().toISOString(),
+    });
+
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      const p = String(path);
+      // Status reports a different Tgid → PID is a thread of another process
+      if (p === "/proc/99999995/status") return "Name: HangWatcher\nTgid:\t12345\nPid:\t99999995\n";
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    // cwd intentionally matches — to prove that Tgid takes priority
+    readlinkMock.mockImplementation(((path: Parameters<typeof readlinkSync>[0], ...args: unknown[]) => {
+      if (String(path) === "/proc/99999995/cwd") return realpathSync(tempDir);
       return actualReadlinkSync(path, ...(args as []));
     }) as typeof readlinkSync);
 

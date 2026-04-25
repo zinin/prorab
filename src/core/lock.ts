@@ -51,6 +51,11 @@ function getBootTime(): number | null {
 function isOwningProcess(pid: number, lockedCwd: string): boolean | null {
   if (process.platform !== "linux") return null;
   try {
+    const status = readFileSync(`/proc/${pid}/status`, "utf-8");
+    const tgidMatch = status.match(/^Tgid:\s*(\d+)\s*$/m);
+    if (!tgidMatch) return null;                 // missing field → cannot tell
+    if (Number(tgidMatch[1]) !== pid) return false;  // thread, not the owning process
+
     const procCwd = readlinkSync(`/proc/${pid}/cwd`);
     return procCwd === realpathSync(lockedCwd);
   } catch {
