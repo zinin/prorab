@@ -315,4 +315,24 @@ describe("acquireLock — stale detection", () => {
     // Lock file must be preserved on throw, not silently overwritten.
     expect(readLockJson(tempDir).pid).toBe(process.pid);
   });
+
+  it("self-pid short-circuit beats btime gate (clock-jump immunity)", () => {
+    // Even when startedAt predates the reported boot time — which would
+    // normally trigger the btime overwrite — a lock containing our own PID
+    // must throw, not be silently stolen.  This guards against wall-clock
+    // jumps that drag the os.uptime() fallback's bootSec past our own
+    // startedAt.
+    writeLock(tempDir, {
+      pid: process.pid,
+      startedAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      if (path === "/proc/stat") return "btime 1700000000\ncpu  1 2 3\n";
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    expect(() => acquireLock(tempDir)).toThrow(/already running/);
+    expect(readLockJson(tempDir).pid).toBe(process.pid);
+  });
 });

@@ -83,6 +83,20 @@ export function acquireLock(cwd: string): void {
     }
 
     if (data) {
+      // Self-pid short-circuit runs FIRST, before the btime gate, so that a
+      // wall-clock jump (NTP correction, manual adjustment) cannot drag the
+      // os.uptime() fallback's bootSec past our own startedAt and falsely
+      // classify our own live lock as predating boot.  Trade-off: a post-reboot
+      // stale lock whose dead writer's PID coincidentally matches ours (≈1/65536
+      // per reboot) will now throw instead of being auto-cleaned — operators can
+      // manually remove the lock file in that case.
+      if (data.pid === process.pid) {
+        throw new Error(
+          `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
+          `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
+        );
+      }
+
       const bootSec = getBootTime();
       const startedSec = Date.parse(data.startedAt) / 1000;
 
@@ -90,14 +104,6 @@ export function acquireLock(cwd: string): void {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, predates boot).`);
       } else if (!isProcessAlive(data.pid)) {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
-      } else if (data.pid === process.pid) {
-        // Lock contains our own PID.  After the btime gate ruled out reboot-stale
-        // locks, the only remaining writer of our PID is us — refuse to silently
-        // overwrite our own lock and surface the double-acquire to the caller.
-        throw new Error(
-          `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
-          `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
-        );
       } else {
         const ownership = isOwningProcess(data.pid, cwd);
         if (ownership === "stranger") {
