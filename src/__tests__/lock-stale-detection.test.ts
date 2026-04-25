@@ -238,4 +238,31 @@ describe("acquireLock — stale detection", () => {
 
     expect(() => acquireLock(tempDir)).toThrow(/already running/);
   });
+
+  it("overwrites lock when /proc/<pid>/... ENOENTs after kill(0) success (process died in gap)", () => {
+    const fakePid = 99999993;
+    writeLock(tempDir, {
+      pid: fakePid,
+      startedAt: new Date().toISOString(),
+    });
+
+    // kill(0) succeeds — but then /proc reads will throw ENOENT
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      const p = String(path);
+      if (p === `/proc/${fakePid}/status`) {
+        const err = new Error("ENOENT") as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    acquireLock(tempDir);
+
+    const data = readLockJson(tempDir);
+    expect(data.pid).toBe(process.pid);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reused by non-prorab"));
+  });
 });

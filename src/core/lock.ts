@@ -58,7 +58,8 @@ function isOwningProcess(pid: number, lockedCwd: string): boolean | null {
 
     const procCwd = readlinkSync(`/proc/${pid}/cwd`);
     return procCwd === realpathSync(lockedCwd);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     return null;
   }
 }
