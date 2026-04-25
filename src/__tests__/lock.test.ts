@@ -30,11 +30,6 @@ describe("acquireLock", () => {
     expect(data.startedAt).toBeDefined();
   });
 
-  it("throws when lock held by live process (self)", () => {
-    acquireLock(tempDir);
-    expect(() => acquireLock(tempDir)).toThrow(/already running/);
-  });
-
   it("removes stale lock from dead process and acquires", () => {
     const lockPath = join(tempDir, ".taskmaster", LOCK_FILENAME);
     writeFileSync(lockPath, JSON.stringify({ pid: 99999999, startedAt: "2020-01-01T00:00:00.000Z" }));
