@@ -421,7 +421,16 @@ export class ClaudeDriver implements AgentDriver {
    * `replyQuestion()` is called, the Promise resolves and the callback returns
    * `{ behavior: 'allow', updatedInput: { ...original, answers } }`.
    *
-   * For all other tools: immediately returns `{ behavior: 'allow' }`.
+   * For all other tools: immediately returns `{ behavior: 'allow', updatedInput }`.
+   *
+   * `updatedInput` MUST be present in every "allow" reply — Claude Code parses
+   * the SDK host response with a Zod schema that requires the field
+   * (`d7.record(d7.string(), d7.unknown())`, no `.optional()`). Returning
+   * `{ behavior: 'allow' }` without `updatedInput` makes Claude Code convert
+   * the response into `{ behavior: 'deny', message: "Tool permission request
+   * failed: ZodError ..." }`, blocking Edit/Write/Bash tool calls in chat
+   * sessions. The SDK's TypeScript type marks `updatedInput` as optional, so
+   * this is not caught at compile time.
    */
   private createCanUseTool(): (
     toolName: string,
@@ -434,7 +443,7 @@ export class ClaudeDriver implements AgentDriver {
       toolOpts: { signal: AbortSignal; toolUseID: string },
     ): Promise<PermissionResult> => {
       if (toolName !== "AskUserQuestion") {
-        return { behavior: "allow" };
+        return { behavior: "allow", updatedInput: toolInput };
       }
 
       const questionId = this.generateQuestionId();
@@ -472,10 +481,13 @@ export class ClaudeDriver implements AgentDriver {
           );
         });
       } catch {
-        // Abort or other error — return empty answers to avoid SDK crash.
-        // The SDK session is being torn down, so the result won't be used.
+        // Abort or other error — return a graceful allow without answers.
+        // `updatedInput` is required by the Claude Code permission-result
+        // schema; even though the SDK session is being torn down, the response
+        // is still parsed before the abort fully propagates, so an incomplete
+        // shape would surface as a ZodError instead of being ignored.
         this.pendingQuestions.delete(questionId);
-        return { behavior: "allow" as const };
+        return { behavior: "allow" as const, updatedInput: toolInput };
       }
 
       this.pendingQuestions.delete(questionId);

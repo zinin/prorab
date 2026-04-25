@@ -292,7 +292,7 @@ describe("ClaudeDriver.startChat()", () => {
     });
   });
 
-  it("canUseTool auto-approves non-AskUserQuestion tools", async () => {
+  it("canUseTool auto-approves non-AskUserQuestion tools and echoes input as updatedInput", async () => {
     const gen = driver.startChat(defaultChatOpts);
     await tick();
     driver.sendMessage("Use a tool");
@@ -307,7 +307,12 @@ describe("ClaudeDriver.startChat()", () => {
       { signal: new AbortController().signal, toolUseID: "tu-1" },
     );
 
-    expect(result).toEqual({ behavior: "allow" });
+    // `updatedInput` is required by the Claude Code permission-result Zod
+    // schema; without it the response is rejected and the tool call denied.
+    expect(result).toEqual({
+      behavior: "allow",
+      updatedInput: { command: "ls" },
+    });
 
     sdkQueue.close();
     await collectEvents(gen);
@@ -416,11 +421,24 @@ describe("ClaudeDriver.startChat()", () => {
     await tick();
 
     // Abort the chat — the canUseTool callback catches the abort error
-    // internally and returns a graceful { behavior: "allow" } to avoid
-    // unhandled rejections in the Claude Agent SDK.
+    // internally and returns a graceful allow with the original input as
+    // `updatedInput` (required by the Claude Code permission-result schema)
+    // to avoid unhandled rejections in the Claude Agent SDK.
     driver.abortChat();
 
-    await expect(canUseToolPromise).resolves.toEqual({ behavior: "allow" });
+    await expect(canUseToolPromise).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: {
+        questions: [
+          {
+            question: "Pick one?",
+            header: "Pick",
+            options: [{ label: "A", description: "Option A" }],
+            multiSelect: false,
+          },
+        ],
+      },
+    });
 
     // sendMessage should now throw since queues are closed
     expect(() => driver.sendMessage("more")).toThrow();
