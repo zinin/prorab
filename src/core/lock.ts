@@ -84,6 +84,13 @@ export function acquireLock(cwd: string): void {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, predates boot).`);
       } else if (!isProcessAlive(data.pid)) {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
+      } else if (data.pid === process.pid) {
+        // Lock contains our own PID — only we could have written it, so it is ours.
+        // Refuse to silently overwrite; surface the double-acquire to the caller.
+        throw new Error(
+          `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
+          `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
+        );
       } else {
         const ownership = isOwningProcess(data.pid, cwd);
         if (ownership === false) {

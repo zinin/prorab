@@ -300,4 +300,17 @@ describe("acquireLock — stale detection", () => {
 
     expect(() => acquireLock(tempDir)).toThrow(/already running/);
   });
+
+  it("throws when lock file contains our own PID (self-pid short-circuit)", () => {
+    // Lock contains process.pid → only we could have written it.  Refuse to
+    // overwrite even when /proc/<self>/cwd does not match the locked cwd
+    // (the typical situation in vitest where worker cwd is the project root,
+    // not the test's tempDir).
+    writeLock(tempDir, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    });
+
+    expect(() => acquireLock(tempDir)).toThrow(/already running/);
+  });
 });
