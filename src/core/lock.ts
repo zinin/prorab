@@ -126,7 +126,8 @@ export function acquireLock(cwd: string): void {
     // manually remove the lock file in that case.
     if (data.pid === process.pid) {
       throw new Error(
-        `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
+        `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}) ` +
+        `— double-acquire from the same process.\n` +
         `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
       );
     }
