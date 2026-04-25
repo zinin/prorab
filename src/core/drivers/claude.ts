@@ -424,8 +424,8 @@ export class ClaudeDriver implements AgentDriver {
    * For all other tools: immediately returns `{ behavior: 'allow', updatedInput }`.
    *
    * `updatedInput` MUST be present in every "allow" reply — Claude Code parses
-   * the SDK host response with a Zod schema that requires the field
-   * (`d7.record(d7.string(), d7.unknown())`, no `.optional()`). Returning
+   * the SDK host response with a strict Zod schema that requires
+   * `updatedInput: Record<string, unknown>` (no `.optional()`). Returning
    * `{ behavior: 'allow' }` without `updatedInput` makes Claude Code convert
    * the response into `{ behavior: 'deny', message: "Tool permission request
    * failed: ZodError ..." }`, blocking Edit/Write/Bash tool calls in chat
@@ -443,7 +443,7 @@ export class ClaudeDriver implements AgentDriver {
       toolOpts: { signal: AbortSignal; toolUseID: string },
     ): Promise<PermissionResult> => {
       if (toolName !== "AskUserQuestion") {
-        return { behavior: "allow", updatedInput: toolInput };
+        return { behavior: "allow", updatedInput: { ...toolInput } };
       }
 
       const questionId = this.generateQuestionId();
@@ -461,9 +461,11 @@ export class ClaudeDriver implements AgentDriver {
 
       // Wait for the answer from replyQuestion().
       // On abort, the pending promise rejects — we catch it and return a
-      // graceful "allow" with empty answers so the SDK does not receive an
-      // unhandled rejection from canUseTool. The abort signal has already
-      // been fired, so the SDK session will terminate shortly after.
+      // graceful "allow" carrying the original toolInput as `updatedInput`,
+      // so the SDK does not receive an unhandled rejection from canUseTool
+      // and the response still satisfies Claude Code's permission-result Zod
+      // schema. The abort signal has already been fired, so the SDK session
+      // will terminate shortly after.
       let answers: QuestionAnswers;
       try {
         answers = await new Promise<QuestionAnswers>((resolve, reject) => {
@@ -487,7 +489,7 @@ export class ClaudeDriver implements AgentDriver {
         // is still parsed before the abort fully propagates, so an incomplete
         // shape would surface as a ZodError instead of being ignored.
         this.pendingQuestions.delete(questionId);
-        return { behavior: "allow" as const, updatedInput: toolInput };
+        return { behavior: "allow", updatedInput: { ...toolInput } };
       }
 
       this.pendingQuestions.delete(questionId);
