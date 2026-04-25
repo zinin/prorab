@@ -161,4 +161,24 @@ describe("acquireLock — stale detection", () => {
     expect(data.pid).toBe(process.pid);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("process is gone"));
   });
+
+  it("removes lock when PID is alive but /proc/<pid>/cwd points elsewhere", () => {
+    writeLock(tempDir, {
+      pid: 99999996,
+      startedAt: new Date().toISOString(),    // recent — passes btime gate
+    });
+
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    readlinkMock.mockImplementation(((path: Parameters<typeof readlinkSync>[0], ...args: unknown[]) => {
+      if (String(path) === "/proc/99999996/cwd") return "/some/other/dir";
+      return actualReadlinkSync(path, ...(args as []));
+    }) as typeof readlinkSync);
+
+    acquireLock(tempDir);
+
+    const data = readLockJson(tempDir);
+    expect(data.pid).toBe(process.pid);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reused by non-prorab"));
+  });
 });

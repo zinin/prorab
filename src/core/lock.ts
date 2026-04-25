@@ -1,4 +1,7 @@
-import { readFileSync, writeFileSync, unlinkSync, existsSync, appendFileSync } from "node:fs";
+import {
+  readFileSync, writeFileSync, unlinkSync, existsSync, appendFileSync,
+  readlinkSync, realpathSync,
+} from "node:fs";
 import { uptime as osUptime } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +48,16 @@ function getBootTime(): number | null {
   return null;
 }
 
+function isOwningProcess(pid: number, lockedCwd: string): boolean | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const procCwd = readlinkSync(`/proc/${pid}/cwd`);
+    return procCwd === realpathSync(lockedCwd);
+  } catch {
+    return null;
+  }
+}
+
 export function acquireLock(cwd: string): void {
   const path = lockPath(cwd);
 
@@ -66,10 +79,15 @@ export function acquireLock(cwd: string): void {
       } else if (!isProcessAlive(data.pid)) {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
       } else {
-        throw new Error(
-          `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
-          `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
-        );
+        const ownership = isOwningProcess(data.pid, cwd);
+        if (ownership === false) {
+          console.warn(`Warning: removing stale lock (PID was ${data.pid}, reused by non-prorab process).`);
+        } else {
+          throw new Error(
+            `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
+            `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
+          );
+        }
       }
     }
   }
