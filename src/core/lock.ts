@@ -56,6 +56,16 @@ type OwnershipResult =
 
 function isOwningProcess(pid: number, lockedCwd: string): OwnershipResult {
   if (process.platform !== "linux") return "unknown";
+
+  // Resolve lockedCwd up front, OUTSIDE the /proc try/catch, so an ENOENT on
+  // lockedCwd itself is not misinterpreted as "/proc/<pid>/... vanished".
+  let lockedReal: string;
+  try {
+    lockedReal = realpathSync(lockedCwd);
+  } catch {
+    return "unknown";
+  }
+
   try {
     const status = readFileSync(`/proc/${pid}/status`, "utf-8");
     const tgidMatch = status.match(/^Tgid:\s*(\d+)\s*$/m);
@@ -63,7 +73,7 @@ function isOwningProcess(pid: number, lockedCwd: string): OwnershipResult {
     if (Number(tgidMatch[1]) !== pid) return "stranger";  // thread, not the owning process
 
     const procCwd = readlinkSync(`/proc/${pid}/cwd`);
-    return procCwd === realpathSync(lockedCwd) ? "owns" : "stranger";
+    return procCwd === lockedReal ? "owns" : "stranger";
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return "died";
     return "unknown";
