@@ -265,4 +265,39 @@ describe("acquireLock — stale detection", () => {
     expect(data.pid).toBe(process.pid);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reused by non-prorab"));
   });
+
+  it("throws conservatively on non-Linux platform when PID is alive", () => {
+    writeLock(tempDir, {
+      pid: 99999992,
+      startedAt: new Date().toISOString(),
+    });
+
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    try {
+      expect(() => acquireLock(tempDir)).toThrow(/already running/);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("throws conservatively when /proc/<pid>/status lacks Tgid field (custom kernel)", () => {
+    const fakePid = 99999991;
+    writeLock(tempDir, {
+      pid: fakePid,
+      startedAt: new Date().toISOString(),
+    });
+
+    killSpy.mockImplementation(((_pid: number, _signal?: string | number) => true) as typeof process.kill);
+
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      // Status without a Tgid line — non-mainstream kernel
+      if (String(path) === `/proc/${fakePid}/status`) return "Name: weirdproc\nState: S\nPid:\t99999991\n";
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+
+    expect(() => acquireLock(tempDir)).toThrow(/already running/);
+  });
 });
