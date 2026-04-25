@@ -312,5 +312,7 @@ describe("acquireLock — stale detection", () => {
     });
 
     expect(() => acquireLock(tempDir)).toThrow(/already running/);
+    // Lock file must be preserved on throw, not silently overwritten.
+    expect(readLockJson(tempDir).pid).toBe(process.pid);
   });
 });
