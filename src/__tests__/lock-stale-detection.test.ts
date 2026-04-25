@@ -137,4 +137,28 @@ describe("acquireLock — stale detection", () => {
     expect(data.pid).toBe(process.pid);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("process is gone"));
   });
+
+  it("removes lock when btime is undeterminable and PID is dead", () => {
+    writeLock(tempDir, {
+      pid: 99999997,
+      startedAt: "2020-01-01T00:00:00.000Z",
+    });
+
+    // /proc/stat unreadable AND os.uptime throws → bootSec = null
+    readMock.mockImplementation(((path: Parameters<typeof readFileSync>[0], ...args: unknown[]) => {
+      if (path === "/proc/stat") {
+        const err = new Error("EACCES") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return actualReadFileSync(path, ...(args as []));
+    }) as typeof readFileSync);
+    uptimeMock.mockImplementation(() => { throw new Error("uptime unavailable"); });
+
+    acquireLock(tempDir);
+
+    const data = readLockJson(tempDir);
+    expect(data.pid).toBe(process.pid);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("process is gone"));
+  });
 });
