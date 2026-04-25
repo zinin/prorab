@@ -263,7 +263,7 @@ describe("acquireLock — stale detection", () => {
 
     const data = readLockJson(tempDir);
     expect(data.pid).toBe(process.pid);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("reused by non-prorab"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("owner exited during ownership check"));
   });
 
   it("throws conservatively on non-Linux platform when PID is alive", () => {

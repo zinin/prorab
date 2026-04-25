@@ -48,19 +48,25 @@ function getBootTime(): number | null {
   return null;
 }
 
-function isOwningProcess(pid: number, lockedCwd: string): boolean | null {
-  if (process.platform !== "linux") return null;
+type OwnershipResult =
+  | "owns"      // PID is alive, Tgid matches, cwd matches → throw (real conflict)
+  | "stranger"  // PID is alive but is a thread or its cwd differs → overwrite (PID reuse)
+  | "died"      // /proc/<pid>/... ENOENT after a successful kill(0) → owner exited mid-check
+  | "unknown";  // non-Linux, EACCES, missing Tgid, etc. → conservative throw
+
+function isOwningProcess(pid: number, lockedCwd: string): OwnershipResult {
+  if (process.platform !== "linux") return "unknown";
   try {
     const status = readFileSync(`/proc/${pid}/status`, "utf-8");
     const tgidMatch = status.match(/^Tgid:\s*(\d+)\s*$/m);
-    if (!tgidMatch) return null;                 // missing field → cannot tell
-    if (Number(tgidMatch[1]) !== pid) return false;  // thread, not the owning process
+    if (!tgidMatch) return "unknown";                  // missing field → cannot tell
+    if (Number(tgidMatch[1]) !== pid) return "stranger";  // thread, not the owning process
 
     const procCwd = readlinkSync(`/proc/${pid}/cwd`);
-    return procCwd === realpathSync(lockedCwd);
+    return procCwd === realpathSync(lockedCwd) ? "owns" : "stranger";
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
-    return null;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "died";
+    return "unknown";
   }
 }
 
@@ -85,17 +91,21 @@ export function acquireLock(cwd: string): void {
       } else if (!isProcessAlive(data.pid)) {
         console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
       } else if (data.pid === process.pid) {
-        // Lock contains our own PID — only we could have written it, so it is ours.
-        // Refuse to silently overwrite; surface the double-acquire to the caller.
+        // Lock contains our own PID.  After the btime gate ruled out reboot-stale
+        // locks, the only remaining writer of our PID is us — refuse to silently
+        // overwrite our own lock and surface the double-acquire to the caller.
         throw new Error(
           `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
           `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
         );
       } else {
         const ownership = isOwningProcess(data.pid, cwd);
-        if (ownership === false) {
+        if (ownership === "stranger") {
           console.warn(`Warning: removing stale lock (PID was ${data.pid}, reused by non-prorab process).`);
+        } else if (ownership === "died") {
+          console.warn(`Warning: removing stale lock (PID was ${data.pid}, owner exited during ownership check).`);
         } else {
+          // "owns" (real conflict) or "unknown" (cannot verify) → conservative throw.
           throw new Error(
             `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
             `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
