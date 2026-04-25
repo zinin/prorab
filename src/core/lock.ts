@@ -20,6 +20,22 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function getBootTime(): number | null {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync("/proc/stat", "utf-8");
+      const m = stat.match(/^btime\s+(\d+)$/m);
+      if (m) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    } catch {
+      // fall through to fallback in a later task
+    }
+  }
+  return null;
+}
+
 export function acquireLock(cwd: string): void {
   const path = lockPath(cwd);
 
@@ -33,14 +49,19 @@ export function acquireLock(cwd: string): void {
     }
 
     if (data) {
-      if (isProcessAlive(data.pid)) {
+      const bootSec = getBootTime();
+      const startedSec = Date.parse(data.startedAt) / 1000;
+
+      if (bootSec !== null && Number.isFinite(startedSec) && startedSec < bootSec) {
+        console.warn(`Warning: removing stale lock (PID was ${data.pid}, predates boot).`);
+      } else if (!isProcessAlive(data.pid)) {
+        console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
+      } else {
         throw new Error(
           `Another prorab instance is already running (PID ${data.pid}, started ${data.startedAt}).\n` +
           `Stop it first or remove .taskmaster/${LOCK_FILENAME} if the process is dead.`
         );
       }
-
-      console.warn(`Warning: removing stale lock (PID was ${data.pid}).`);
     }
   }
 
