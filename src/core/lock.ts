@@ -135,7 +135,10 @@ export function acquireLock(cwd: string): void {
     const startedSec = Date.parse(data.startedAt) / 1000;
 
     if (bootSec !== null && Number.isFinite(startedSec) && startedSec < bootSec) {
-      console.warn(`Warning: removing stale lock (PID was ${data.pid}, predates boot).`);
+      console.warn(
+        `Warning: removing stale lock (PID was ${data.pid}, predates boot — ` +
+        `startedAt=${data.startedAt}, boot=${new Date(bootSec * 1000).toISOString()}).`
+      );
     } else if (!isProcessAlive(data.pid)) {
       console.warn(`Warning: removing stale lock (PID was ${data.pid}, process is gone).`);
     } else {
