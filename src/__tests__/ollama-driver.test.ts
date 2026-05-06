@@ -89,5 +89,64 @@ describe("OllamaDriver", () => {
         if (c.includes("/v1/models/")) expect(c).not.toMatch(/\[/);
       }
     });
+
+    it("uses OLLAMA_HOST (host:port form)", async () => {
+      process.env.OLLAMA_HOST = "192.168.1.10:11434";
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        return new Response("", { status: 404 });
+      }) as unknown as typeof fetch;
+      globalThis.fetch = fetchMock;
+
+      await new OllamaDriver().listModels();
+      const versionCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.endsWith("/api/version"));
+      expect(versionCalls[0]).toBe("http://192.168.1.10:11434/api/version");
+    });
+
+    it("uses OLLAMA_HOST (https URL form, kept verbatim)", async () => {
+      process.env.OLLAMA_HOST = "https://my-ollama.example.com";
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        return new Response("", { status: 404 });
+      }) as unknown as typeof fetch;
+      globalThis.fetch = fetchMock;
+
+      await new OllamaDriver().listModels();
+      const versionCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.endsWith("/api/version"));
+      expect(versionCalls[0]).toBe("https://my-ollama.example.com/api/version");
+    });
+
+    it("strips trailing slash from OLLAMA_HOST", async () => {
+      process.env.OLLAMA_HOST = "http://127.0.0.1:11434/";
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        return new Response("", { status: 404 });
+      }) as unknown as typeof fetch;
+      globalThis.fetch = fetchMock;
+
+      await new OllamaDriver().listModels();
+      const versionCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.endsWith("/api/version"));
+      // No double slash anywhere in the path.
+      expect(versionCalls[0]).toBe("http://127.0.0.1:11434/api/version");
+      for (const c of versionCalls) expect(c).not.toMatch(/[^:]\/\//);
+    });
+
+    it("returns [] (does not throw) when OLLAMA_HOST is unix-socket form", async () => {
+      process.env.OLLAMA_HOST = "/var/run/ollama.sock";
+      const models = await new OllamaDriver().listModels();
+      expect(models).toEqual([]);
+    });
+
+    it("returns [] when OLLAMA_HOST contains internal whitespace", async () => {
+      process.env.OLLAMA_HOST = "192.168.1.10 :11434";
+      const models = await new OllamaDriver().listModels();
+      expect(models).toEqual([]);
+    });
   });
 });
