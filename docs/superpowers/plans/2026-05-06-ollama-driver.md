@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a new `ollama` agent to prorab that routes Claude Agent SDK traffic through the local Ollama daemon (`127.0.0.1:11434` by default), giving access to Ollama cloud models (`*:cloud`) without depending on a CCS proxy.
+**Goal:** Add a new `ollama` agent to prorab that routes Claude Agent SDK traffic through the local Ollama daemon (`127.0.0.1:11434` by default), giving access to Ollama cloud models without depending on a CCS proxy.
 
-**Architecture:** New `OllamaDriver` class composes over `ClaudeDriver` (mirroring the proven `CcsDriver` pattern). It builds a per-session `env` override (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN=ollama`, model defaults, `CLAUDE_CODE_*` knobs) and delegates the actual SDK work to the inner driver. Preflight: HTTP probe `/api/version` + verify the requested cloud model appears in `/v1/models`.
+**Architecture:** New `OllamaDriver` class composes over `ClaudeDriver` (mirroring the proven `CcsDriver` pattern; subclass alternative was considered and rejected to keep the interface explicit). It builds a per-session `env` override (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN=ollama`, model defaults, `CLAUDE_CODE_*` knobs — with a strip pass for any leaked parent `ANTHROPIC_*`/`CLAUDE_CODE_*`) and delegates SDK work to the inner driver, stripping `opts.variant` before delegation. Preflight: HTTP probe `/api/version` + per-model `GET /v1/models/<id>` to disambiguate signed-in / not-signed-in / transient. The model catalog is hardcoded (`OLLAMA_CLOUD_CATALOG`) because the daemon's bulk `GET /v1/models` is local-manifest-only and returns `data:null` even for signed-in cloud profiles (verified empirically on Ollama 0.23.1).
 
 **Tech Stack:** TypeScript (strict), Node.js 24+, `@anthropic-ai/claude-agent-sdk`, vitest, Vue 3 SFCs (UI), zod (`AgentTypeSchema`), commander (CLI).
 
@@ -17,15 +17,18 @@
 - `src/__tests__/ollama-driver.test.ts` — vitest suite mirroring `ccs-driver.test.ts` patterns.
 
 **Modified:**
-- `src/types.ts` — add `"ollama"` to `AgentTypeSchema` (line 326).
+- `src/types.ts` — add `"ollama"` to `AgentTypeSchema` (line 326). `Reviewer` derives from this enum and updates automatically.
 - `src/core/drivers/factory.ts` — add `case "ollama"` in `createDriver()` switch.
 - `src/index.ts` — extend the `--agent` help string (line 38).
-- `ui/src/components/AgentWizard.vue` — add `{ label: "Ollama", value: "ollama" }` (line ~219).
-- `ui/src/views/TaskDetailView.vue` — same (line ~207).
+- `src/server/routes/models.ts` — extend the `needsSetup` exemption to include `"ollama"` so `/api/models?agent=ollama` doesn't call the model-required `setup()`; skip caching empty results so the dropdown reflects current daemon state on subsequent calls.
+- `ui/src/components/AgentWizard.vue` — add `{ label: "Ollama", value: "ollama" }` to the agents list, and extend the "No user settings" checkbox `v-if` (currently `agent === 'claude' || agent === 'ccs'`) to include `'ollama'`.
+- `ui/src/views/TaskDetailView.vue` — add `{ label: "Ollama", value: "ollama" }` (line ~207).
 - `ui/src/views/ExecutionView.vue` — same (line ~180).
 - `ui/src/views/TaskListView.vue` — same (line ~134).
 - `.claude/rules/drivers.md` — append `OllamaDriver` section.
+- `.claude/rules/frontend.md` — mention `"ollama"` in the agent list / store description.
 - `CLAUDE.md` — add `ollama` to the drivers/agents listing.
+- `README.md` — add `Ollama` to the four mentions of supported agents (line ~14, ~73, ~85, ~120).
 
 **Reference files (read-only — used as patterns, not modified):**
 - `src/core/drivers/ccs.ts` — same architectural pattern.
@@ -199,228 +202,303 @@ git commit -m "feat(ollama): add OllamaDriver skeleton with model-required guard
 
 ---
 
-## Task 2: `listModels()` — daemon down returns empty list
+## Task 2: `listModels()` — hardcoded catalog probed via per-model GET
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
 - Modify: `src/core/drivers/ollama.ts`
 
-- [ ] **Step 2.1: Write the failing test**
+**Background:** Per design §`listModels()`, the daemon's bulk `GET /v1/models` is local-manifest-only and returns `{"object":"list","data":null}` even for signed-in cloud profiles (verified empirically on Ollama 0.23.1). We define `OLLAMA_CLOUD_CATALOG` as a hardcoded list, then probe each entry via `GET /v1/models/<id>` and surface the ones that come back with HTTP 200.
 
-Add a new `describe("listModels()", ...)` block (sibling to the `describe("setup()")` block):
+- [ ] **Step 2.1: Write the failing tests**
+
+Add a new `describe("listModels()")` block (sibling to `describe("setup()")`):
 
 ```typescript
 describe("listModels()", () => {
-  it("returns [] when daemon fetch rejects", async () => {
+  it("returns [] when daemon /api/version rejects", async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-    const driver = new OllamaDriver();
-    const models = await driver.listModels();
+    const models = await new OllamaDriver().listModels();
     expect(models).toEqual([]);
   });
 
-  it("returns [] when daemon returns non-OK", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response("nope", { status: 500 }),
-    );
-    const driver = new OllamaDriver();
-    const models = await driver.listModels();
+  it("returns [] when daemon /api/version returns non-OK", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("err", { status: 500 }));
+    const models = await new OllamaDriver().listModels();
     expect(models).toEqual([]);
   });
 
-  it("returns [] when daemon returns malformed JSON", async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response("not json{", { status: 200 }),
-    );
-    const driver = new OllamaDriver();
-    const models = await driver.listModels();
-    expect(models).toEqual([]);
+  it("probes each catalog entry via /v1/models/<id> and keeps only HTTP-200 ones", async () => {
+    const accessible = new Set(["deepseek-v4-pro:cloud[1m]", "kimi-k2.6:cloud", "minimax-m2.7:cloud"]);
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+      const m = u.match(/\/v1\/models\/(.+)$/);
+      if (m) {
+        const decoded = decodeURIComponent(m[1]);
+        return new Response(JSON.stringify({ id: decoded }), { status: accessible.has(decoded) ? 200 : 404 });
+      }
+      return new Response("", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const models = await new OllamaDriver().listModels();
+    const ids = models.map((x) => x.id).sort();
+    expect(ids).toEqual(["deepseek-v4-pro:cloud[1m]", "kimi-k2.6:cloud", "minimax-m2.7:cloud"]);
+    // ModelEntry must NOT carry a `variants` field — UI hides effort dropdown via that.
+    for (const m of models) expect(m).not.toHaveProperty("variants");
+  });
+
+  it("URL-encodes catalog ids when probing (square brackets do not break the URL)", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+      return new Response("", { status: 404 });          // all 404 — only checking call shape
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    await new OllamaDriver().listModels();
+    const calls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
+    // No raw `[` should leak into the URL — encodeURIComponent turns it into %5B.
+    for (const c of calls) {
+      if (c.includes("/v1/models/")) expect(c).not.toMatch(/\[/);
+    }
   });
 });
 ```
 
-- [ ] **Step 2.2: Run tests — first new test fails because real `listModels()` returns `[]` already**
-
-Wait — re-read step 1.3: `listModels()` already returns `[]`. So the first test passes trivially even without a real implementation. The failing intent is "real fetch logic that handles errors gracefully". Skip running for now and proceed to implement the real method, then run.
-
-Actually, the clean path is to assert that the implementation calls `fetch`. Update the first test:
-
-Replace the first test body with:
-
-```typescript
-const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-globalThis.fetch = fetchMock;
-const driver = new OllamaDriver();
-const models = await driver.listModels();
-expect(models).toEqual([]);
-expect(fetchMock).toHaveBeenCalledWith(
-  "http://127.0.0.1:11434/v1/models",
-  expect.objectContaining({ signal: expect.any(AbortSignal) }),
-);
-```
-
-Now this fails — the stub returns `[]` without calling `fetch`.
-
-- [ ] **Step 2.3: Run tests — confirm failure**
+- [ ] **Step 2.2: Run tests — must fail**
 
 ```
 npx vitest run src/__tests__/ollama-driver.test.ts
 ```
 
-Expected: at least one test fails (`fetchMock not called`).
+Expected: the catalog-probe and URL-encoding tests fail; the two daemon-down tests may pass trivially because the stub `listModels()` already returns `[]`.
 
-- [ ] **Step 2.4: Implement `listModels()`**
+- [ ] **Step 2.3: Implement `listModels()` and the catalog**
 
-Replace the `listModels()` body in `src/core/drivers/ollama.ts`:
+In `src/core/drivers/ollama.ts`, add at module level (above the class):
+
+```typescript
+const PREFLIGHT_TIMEOUT_MS = Number(process.env.OLLAMA_PREFLIGHT_TIMEOUT_MS) || 5000;
+
+/**
+ * Hardcoded list of cloud model ids prorab knows how to surface. Mirrors the
+ * cloud catalog advertised by `ollama launch claude` upstream. Bump when new
+ * cloud models ship; per-model probing in listModels() filters to whatever
+ * the local daemon can actually serve, so false positives are auto-pruned.
+ */
+const OLLAMA_CLOUD_CATALOG: ReadonlyArray<string> = [
+  "deepseek-v4-pro:cloud[1m]",
+  "kimi-k2.6:cloud",
+  "minimax-m2.7:cloud",
+  "qwen3-coder:480b-cloud[1m]",
+  "gpt-oss:120b-cloud",
+];
+
+function resolveBaseUrl(): string {
+  const raw = process.env.OLLAMA_HOST?.trim();
+  if (!raw) return "http://127.0.0.1:11434";
+  if (raw.startsWith("/")) {
+    throw new Error(
+      `Unix-socket OLLAMA_HOST ('${raw}') is not supported. Use http://host:port or set TCP listening.`,
+    );
+  }
+  if (/\s/.test(raw)) {
+    throw new Error(`OLLAMA_HOST contains whitespace: '${raw}'`);
+  }
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  return withScheme.replace(/\/+$/, "");
+}
+```
+
+Replace the `listModels()` body in `OllamaDriver`:
 
 ```typescript
   async listModels(): Promise<ModelEntry[]> {
-    const baseUrl = this.resolveBaseUrl();
-    let resp: Response;
+    let baseUrl: string;
     try {
-      resp = await fetch(`${baseUrl}/v1/models`, {
-        signal: AbortSignal.timeout(2000),
+      baseUrl = resolveBaseUrl();
+    } catch {
+      return [];
+    }
+
+    try {
+      const v = await fetch(`${baseUrl}/api/version`, {
+        signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
       });
+      if (!v.ok) return [];
     } catch {
       return [];
     }
-    if (!resp.ok) return [];
-    let data: { data?: Array<{ id?: unknown }> };
-    try {
-      data = await resp.json();
-    } catch {
-      return [];
-    }
-    const list = Array.isArray(data?.data) ? data.data : [];
-    return list
-      .filter((m): m is { id: string } => typeof m.id === "string" && m.id.includes(":cloud"))
-      .map((m) => ({ id: m.id, name: m.id }));
+
+    const checks = await Promise.all(
+      OLLAMA_CLOUD_CATALOG.map(async (id) => {
+        try {
+          const r = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(id)}`, {
+            signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
+          });
+          return r.ok ? id : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return checks
+      .filter((id): id is string => id !== null)
+      .map((id) => ({ id, name: id }));
   }
-
-  private resolveBaseUrl(): string {
-    const host = process.env.OLLAMA_HOST?.trim() || "127.0.0.1:11434";
-    return /^https?:\/\//i.test(host) ? host : `http://${host}`;
-  }
 ```
 
-- [ ] **Step 2.5: Run tests — all three should pass**
+- [ ] **Step 2.4: Run tests — all four should pass**
 
-```
-npx vitest run src/__tests__/ollama-driver.test.ts
-```
+Expected: 5 passed total (1 from Task 1, 4 from this task).
 
-Expected: 4 passed (1 from Task 1, 3 from this task).
-
-- [ ] **Step 2.6: Commit**
+- [ ] **Step 2.5: Commit**
 
 ```bash
 git add src/core/drivers/ollama.ts src/__tests__/ollama-driver.test.ts
-git commit -m "feat(ollama): listModels() with graceful daemon-down/non-OK/malformed-JSON handling"
+git commit -m "feat(ollama): listModels via hardcoded catalog probed by /v1/models/<id>"
 ```
 
 ---
 
-## Task 3: `listModels()` — happy path filters to `:cloud`
+## Task 3: `listModels()` honors `OLLAMA_HOST` (characterization)
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
 
-- [ ] **Step 3.1: Write the failing test**
+These tests pin the `resolveBaseUrl()` behavior the implementation in Task 2 already has. Pure characterization — they should pass without further code changes.
 
-Add inside the `describe("listModels()")` block:
+- [ ] **Step 3.1: Add tests**
+
+Add inside `describe("listModels()")`:
 
 ```typescript
-it("filters to *:cloud* models from /v1/models", async () => {
-  globalThis.fetch = vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({
-        data: [
-          { id: "llama3.2:3b", object: "model" },
-          { id: "deepseek-v4-pro:cloud[1m]", object: "model" },
-          { id: "kimi-k2.6:cloud", object: "model" },
-          { id: "qwen3-coder:480b", object: "model" },
-        ],
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    ),
-  );
-  const driver = new OllamaDriver();
-  const models = await driver.listModels();
-  expect(models).toEqual([
-    { id: "deepseek-v4-pro:cloud[1m]", name: "deepseek-v4-pro:cloud[1m]" },
-    { id: "kimi-k2.6:cloud", name: "kimi-k2.6:cloud" },
-  ]);
+it("uses OLLAMA_HOST (host:port form)", async () => {
+  process.env.OLLAMA_HOST = "192.168.1.10:11434";
+  const fetchMock = vi.fn(async (url: string) => {
+    if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    return new Response("", { status: 404 });
+  }) as unknown as typeof fetch;
+  globalThis.fetch = fetchMock;
+
+  await new OllamaDriver().listModels();
+  const versionCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    .map((c) => String(c[0]))
+    .filter((u) => u.endsWith("/api/version"));
+  expect(versionCalls[0]).toBe("http://192.168.1.10:11434/api/version");
+});
+
+it("uses OLLAMA_HOST (https URL form, kept verbatim)", async () => {
+  process.env.OLLAMA_HOST = "https://my-ollama.example.com";
+  const fetchMock = vi.fn(async (url: string) => {
+    if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    return new Response("", { status: 404 });
+  }) as unknown as typeof fetch;
+  globalThis.fetch = fetchMock;
+
+  await new OllamaDriver().listModels();
+  const versionCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    .map((c) => String(c[0]))
+    .filter((u) => u.endsWith("/api/version"));
+  expect(versionCalls[0]).toBe("https://my-ollama.example.com/api/version");
+});
+
+it("strips trailing slash from OLLAMA_HOST", async () => {
+  process.env.OLLAMA_HOST = "http://127.0.0.1:11434/";
+  const fetchMock = vi.fn(async (url: string) => {
+    if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    return new Response("", { status: 404 });
+  }) as unknown as typeof fetch;
+  globalThis.fetch = fetchMock;
+
+  await new OllamaDriver().listModels();
+  const versionCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    .map((c) => String(c[0]))
+    .filter((u) => u.endsWith("/api/version"));
+  // No double slash anywhere in the path.
+  expect(versionCalls[0]).toBe("http://127.0.0.1:11434/api/version");
+  for (const c of versionCalls) expect(c).not.toMatch(/[^:]\/\//);
+});
+
+it("returns [] (does not throw) when OLLAMA_HOST is unix-socket form", async () => {
+  process.env.OLLAMA_HOST = "/var/run/ollama.sock";
+  const models = await new OllamaDriver().listModels();
+  expect(models).toEqual([]);
+});
+
+it("returns [] when OLLAMA_HOST contains internal whitespace", async () => {
+  process.env.OLLAMA_HOST = "192.168.1.10 :11434";
+  const models = await new OllamaDriver().listModels();
+  expect(models).toEqual([]);
 });
 ```
 
-- [ ] **Step 3.2: Run test — must pass (filter logic is already in Task 2's impl)**
+- [ ] **Step 3.2: Run tests — should pass**
 
-```
-npx vitest run src/__tests__/ollama-driver.test.ts
-```
-
-Expected: 5 passed.
-
-If the test fails, the implementation in Task 2 was insufficient — adjust the filter logic in `ollama.ts` until this test passes alongside the others.
+Expected: 10 passed total.
 
 - [ ] **Step 3.3: Commit**
 
 ```bash
 git add src/__tests__/ollama-driver.test.ts
-git commit -m "test(ollama): listModels() filters to :cloud models"
+git commit -m "test(ollama): characterize OLLAMA_HOST normalization (host:port, URL, trailing slash, unix-socket, whitespace)"
 ```
 
 ---
 
-## Task 4: `listModels()` honors `OLLAMA_HOST`
+## Task 4: `setup()` cloud-only guard
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
+- Modify: `src/core/drivers/ollama.ts`
 
 - [ ] **Step 4.1: Write the failing test**
 
-Add inside `describe("listModels()")`:
+Add inside `describe("setup()")`:
 
 ```typescript
-it("uses OLLAMA_HOST env var (host:port form)", async () => {
-  process.env.OLLAMA_HOST = "192.168.1.10:11434";
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ data: [] }), { status: 200 }),
+it("rejects non-cloud models", async () => {
+  // No fetch mock needed — cloud guard runs before any HTTP call.
+  globalThis.fetch = vi.fn();
+  const driver = new OllamaDriver("llama3.2:3b");
+  await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+    /supports only cloud models.*llama3\.2:3b/,
   );
-  globalThis.fetch = fetchMock;
-  await new OllamaDriver().listModels();
-  expect(fetchMock).toHaveBeenCalledWith(
-    "http://192.168.1.10:11434/v1/models",
-    expect.anything(),
-  );
-});
-
-it("uses OLLAMA_HOST env var (https URL form, kept as-is)", async () => {
-  process.env.OLLAMA_HOST = "https://my-ollama.example.com";
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify({ data: [] }), { status: 200 }),
-  );
-  globalThis.fetch = fetchMock;
-  await new OllamaDriver().listModels();
-  expect(fetchMock).toHaveBeenCalledWith(
-    "https://my-ollama.example.com/v1/models",
-    expect.anything(),
-  );
+  expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 ```
 
-- [ ] **Step 4.2: Run tests — should pass (resolveBaseUrl already handles both forms)**
+- [ ] **Step 4.2: Run test — must fail**
 
+The test fails because `setup()` currently throws "Not implemented yet" generically.
+
+- [ ] **Step 4.3: Implement the guard**
+
+In `src/core/drivers/ollama.ts`, update `setup()`:
+
+```typescript
+  async setup(_opts: SetupOptions): Promise<void> {
+    if (!this.model) {
+      throw new Error("Ollama agent requires a model");
+    }
+    if (!this.model.includes(":cloud")) {
+      throw new Error(
+        `Ollama agent supports only cloud models (id must contain ':cloud'); got '${this.model}'.`,
+      );
+    }
+    throw new Error("Not implemented yet");
+  }
 ```
-npx vitest run src/__tests__/ollama-driver.test.ts
-```
 
-Expected: 7 passed.
+- [ ] **Step 4.4: Run tests — must pass**
 
-- [ ] **Step 4.3: Commit**
+Expected: 11 passed.
+
+- [ ] **Step 4.5: Commit**
 
 ```bash
-git add src/__tests__/ollama-driver.test.ts
-git commit -m "test(ollama): listModels() respects OLLAMA_HOST in both host:port and URL forms"
+git add src/core/drivers/ollama.ts src/__tests__/ollama-driver.test.ts
+git commit -m "feat(ollama): reject non-cloud models at setup()"
 ```
 
 ---
@@ -431,7 +509,7 @@ git commit -m "test(ollama): listModels() respects OLLAMA_HOST in both host:port
 - Modify: `src/__tests__/ollama-driver.test.ts`
 - Modify: `src/core/drivers/ollama.ts`
 
-- [ ] **Step 5.1: Write the failing test**
+- [ ] **Step 5.1: Write the failing tests**
 
 Add inside `describe("setup()")`:
 
@@ -457,27 +535,32 @@ it("throws when daemon /api/version returns non-OK", async () => {
 
 - [ ] **Step 5.2: Run tests — must fail**
 
-Expected: both new tests fail because `setup()` currently throws "Not implemented yet".
+Expected: both new tests fail because `setup()` currently throws "Not implemented yet" after the cloud-guard.
 
-- [ ] **Step 5.3: Implement preflight (daemon reachability) in `setup()`**
+- [ ] **Step 5.3: Implement daemon preflight**
 
 In `src/core/drivers/ollama.ts`, replace the `setup()` body:
 
 ```typescript
-  async setup(opts: SetupOptions): Promise<void> {
+  async setup(_opts: SetupOptions): Promise<void> {
     if (!this.model) {
       throw new Error("Ollama agent requires a model");
+    }
+    if (!this.model.includes(":cloud")) {
+      throw new Error(
+        `Ollama agent supports only cloud models (id must contain ':cloud'); got '${this.model}'.`,
+      );
     }
     await this.preflightDaemon();
     throw new Error("Not implemented yet");
   }
 
   private async preflightDaemon(): Promise<void> {
-    const baseUrl = this.resolveBaseUrl();
+    const baseUrl = resolveBaseUrl();
     let resp: Response;
     try {
       resp = await fetch(`${baseUrl}/api/version`, {
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
       });
     } catch {
       throw new Error(
@@ -492,13 +575,9 @@ In `src/core/drivers/ollama.ts`, replace the `setup()` body:
   }
 ```
 
-- [ ] **Step 5.4: Run tests — all should pass except the still-stubbed downstream of `setup()`**
+- [ ] **Step 5.4: Run tests — must pass**
 
-```
-npx vitest run src/__tests__/ollama-driver.test.ts
-```
-
-Expected: 9 passed.
+Expected: 13 passed.
 
 - [ ] **Step 5.5: Commit**
 
@@ -509,29 +588,27 @@ git commit -m "feat(ollama): preflight rejects when daemon not reachable"
 
 ---
 
-## Task 6: `setup()` preflight — cloud model not in `/v1/models`
+## Task 6: `setup()` preflight — per-model GET disambiguates 404 vs transient
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
 - Modify: `src/core/drivers/ollama.ts`
 
-- [ ] **Step 6.1: Write the failing test**
+**Background:** Per design §Preflight, model-access is checked via `GET /v1/models/<id>` because the daemon's bulk `GET /v1/models` is local-manifest-only. Status disambiguation:
+- `200` → accessible.
+- `404` → not signed in for this model. Surface "Check 'ollama signin' status".
+- `5xx` / network error / timeout → transient. Surface daemon-issue message; do NOT misdiagnose as auth.
+
+- [ ] **Step 6.1: Write the failing tests**
 
 Add inside `describe("setup()")`:
 
 ```typescript
-it("throws when requested cloud model is missing from /v1/models", async () => {
+it("throws 'not available / signin' when /v1/models/<id> returns 404", async () => {
   globalThis.fetch = vi.fn(async (url: string) => {
     const u = String(url);
-    if (u.endsWith("/api/version")) {
-      return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
-    }
-    if (u.endsWith("/v1/models")) {
-      return new Response(
-        JSON.stringify({ data: [{ id: "kimi-k2.6:cloud" }] }),
-        { status: 200 },
-      );
-    }
+    if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    if (u.includes("/v1/models/")) return new Response(JSON.stringify({}), { status: 404 });
     return new Response("nope", { status: 404 });
   }) as unknown as typeof fetch;
 
@@ -540,20 +617,53 @@ it("throws when requested cloud model is missing from /v1/models", async () => {
     /Model 'deepseek-v4-pro:cloud\[1m\]' is not available.*ollama signin/,
   );
 });
+
+it("throws 'transient daemon issue' when /v1/models/<id> returns 5xx", async () => {
+  globalThis.fetch = vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    if (u.includes("/v1/models/")) return new Response("upstream gone", { status: 503 });
+    return new Response("nope", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+  await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+    /failed to verify model.*transiently overloaded|daemon at .* failed to verify/,
+  );
+});
+
+it("throws 'transient daemon issue' when /v1/models/<id> fetch rejects", async () => {
+  globalThis.fetch = vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    if (u.includes("/v1/models/")) throw new Error("ECONNRESET");
+    return new Response("nope", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+  await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+    /failed to verify model/,
+  );
+});
 ```
 
-- [ ] **Step 6.2: Run test — must fail**
+- [ ] **Step 6.2: Run tests — must fail**
 
-The test will fail because `setup()` still throws "Not implemented yet" after `preflightDaemon`.
+Expected: 3 new tests fail because `setup()` still throws "Not implemented yet" after `preflightDaemon`.
 
-- [ ] **Step 6.3: Implement cloud-model preflight**
+- [ ] **Step 6.3: Implement `preflightModel()`**
 
-In `src/core/drivers/ollama.ts`, update `setup()` body:
+In `src/core/drivers/ollama.ts`, update `setup()`:
 
 ```typescript
-  async setup(opts: SetupOptions): Promise<void> {
+  async setup(_opts: SetupOptions): Promise<void> {
     if (!this.model) {
       throw new Error("Ollama agent requires a model");
+    }
+    if (!this.model.includes(":cloud")) {
+      throw new Error(
+        `Ollama agent supports only cloud models (id must contain ':cloud'); got '${this.model}'.`,
+      );
     }
     await this.preflightDaemon();
     await this.preflightModel();
@@ -561,13 +671,29 @@ In `src/core/drivers/ollama.ts`, update `setup()` body:
   }
 
   private async preflightModel(): Promise<void> {
-    if (!this.model || !this.model.includes(":cloud")) return;
-    const models = await this.listModels();
-    if (!models.some((m) => m.id === this.model)) {
-      const list = models.map((m) => m.id).join(", ") || "(none)";
+    const baseUrl = resolveBaseUrl();
+    const url = `${baseUrl}/v1/models/${encodeURIComponent(this.model as string)}`;
+    let resp: Response;
+    try {
+      resp = await fetch(url, { signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS) });
+    } catch (err) {
+      throw new Error(
+        `Ollama daemon at ${baseUrl} failed to verify model '${this.model}': ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
+      );
+    }
+    if (resp.status === 404) {
+      const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
       throw new Error(
         `Model '${this.model}' is not available via ollama. ` +
-          `Check 'ollama signin' status, or pick from: ${list}`,
+          `Check 'ollama signin' status, or pick from: ${catalog}`,
+      );
+    }
+    if (!resp.ok) {
+      throw new Error(
+        `Ollama daemon at ${baseUrl} failed to verify model '${this.model}': ` +
+          `HTTP ${resp.status}. The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
       );
     }
   }
@@ -575,46 +701,44 @@ In `src/core/drivers/ollama.ts`, update `setup()` body:
 
 - [ ] **Step 6.4: Run tests — must pass**
 
-Expected: 10 passed.
+Expected: 16 passed.
 
 - [ ] **Step 6.5: Commit**
 
 ```bash
 git add src/core/drivers/ollama.ts src/__tests__/ollama-driver.test.ts
-git commit -m "feat(ollama): preflight rejects cloud models missing from /v1/models"
+git commit -m "feat(ollama): per-model preflight via /v1/models/<id> with 404/5xx disambiguation"
 ```
 
 ---
 
-## Task 7: `setup()` builds env vars (BASE_URL, AUTH_TOKEN, API_KEY, model defaults, ATTRIBUTION)
+## Task 7: `setup()` builds env vars + variant strip + env merge
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
 - Modify: `src/core/drivers/ollama.ts`
 
+This task wires the inner `ClaudeDriver`, builds `sessionEnv` (with ANTHROPIC_*/CLAUDE_CODE_* hygiene), and updates `runSession` to (a) strip `opts.variant`, (b) merge our env on top of caller-provided `opts.env` rather than replacing it.
+
 - [ ] **Step 7.1: Add a shared test helper**
 
-Inside the top-level `describe("OllamaDriver", ...)` (after `afterEach`), add a small helper that the next several tests will reuse to set up a fetch mock returning a single given cloud model:
+Inside `describe("OllamaDriver", ...)` (after `afterEach`), add:
 
 ```typescript
 function mockOllamaWith(modelId: string): void {
   globalThis.fetch = vi.fn(async (url: string) => {
     const u = String(url);
-    if (u.endsWith("/api/version")) {
-      return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
-    }
-    if (u.endsWith("/v1/models")) {
-      return new Response(
-        JSON.stringify({ data: [{ id: modelId }] }),
-        { status: 200 },
-      );
+    if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    if (u.includes("/v1/models/")) {
+      const id = decodeURIComponent(u.replace(/.*\/v1\/models\//, ""));
+      return new Response(JSON.stringify({ id }), { status: id === modelId ? 200 : 404 });
     }
     return new Response("nope", { status: 404 });
   }) as unknown as typeof fetch;
 }
 ```
 
-- [ ] **Step 7.2: Write the failing test**
+- [ ] **Step 7.2: Write the failing tests**
 
 Add inside `describe("setup()")`:
 
@@ -624,7 +748,6 @@ it("builds session env with required Anthropic + Claude Code vars", async () => 
   const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
   await driver.setup({ verbosity: "info" });
 
-  // Trigger a runSession so we can inspect what the inner driver received.
   const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
   await driver.runSession({
     prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
@@ -644,13 +767,72 @@ it("builds session env with required Anthropic + Claude Code vars", async () => 
 
   await driver.teardown();
 });
+
+it("strips parent ANTHROPIC_*/CLAUDE_CODE_* leakage", async () => {
+  // Parent process has a real key set; it must NOT survive into the inner SDK env.
+  process.env.ANTHROPIC_API_KEY = "sk-ant-real-parent-key";
+  process.env.ANTHROPIC_RETRY = "9";
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "999";
+
+  mockOllamaWith("kimi-k2.6:cloud");
+  const driver = new OllamaDriver("kimi-k2.6:cloud");
+  await driver.setup({ verbosity: "info" });
+
+  const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+  await driver.runSession({
+    prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+    maxTurns: 1, verbosity: "info", unitId: "u1",
+  });
+  const env = innerInstance.runSession.mock.calls[0][0].env;
+
+  expect(env.ANTHROPIC_API_KEY).toBe("");                  // stripped + re-set to ""
+  expect(env.ANTHROPIC_RETRY).toBeUndefined();             // stripped, no override
+  expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined(); // model has no [Nm]/[Nk] suffix → stripped, no re-set
+
+  await driver.teardown();
+});
+
+it("strips opts.variant before delegating to inner ClaudeDriver", async () => {
+  mockOllamaWith("kimi-k2.6:cloud");
+  const driver = new OllamaDriver("kimi-k2.6:cloud");
+  await driver.setup({ verbosity: "info" });
+
+  const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+  await driver.runSession({
+    prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+    maxTurns: 1, verbosity: "info", unitId: "u1",
+    variant: "high",                                        // must NOT reach inner
+  } as any);
+  const calledOpts = innerInstance.runSession.mock.calls[0][0];
+  expect(calledOpts.variant).toBeUndefined();
+
+  await driver.teardown();
+});
+
+it("merges caller opts.env with sessionEnv (caller wins for unmanaged keys)", async () => {
+  mockOllamaWith("kimi-k2.6:cloud");
+  const driver = new OllamaDriver("kimi-k2.6:cloud");
+  await driver.setup({ verbosity: "info" });
+
+  const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+  await driver.runSession({
+    prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+    maxTurns: 1, verbosity: "info", unitId: "u1",
+    env: { CUSTOM_USER_VAR: "value-from-caller", ANTHROPIC_AUTH_TOKEN: "should-be-overridden" } as Record<string, string>,
+  } as any);
+  const env = innerInstance.runSession.mock.calls[0][0].env;
+  expect(env.CUSTOM_USER_VAR).toBe("value-from-caller");          // caller key preserved
+  expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");                 // our override wins
+
+  await driver.teardown();
+});
 ```
 
-- [ ] **Step 7.3: Run test — must fail**
+- [ ] **Step 7.3: Run tests — must fail**
 
-`setup()` still throws "Not implemented yet" after preflight; `runSession` also throws. The test fails.
+`setup()` still throws "Not implemented yet" after preflight. The four new tests fail.
 
-- [ ] **Step 7.4: Implement `buildEnv()`, finish `setup()`, and wire `runSession`**
+- [ ] **Step 7.4: Implement `buildEnv()`, complete `setup()`, wire `runSession`**
 
 In `src/core/drivers/ollama.ts`:
 
@@ -660,6 +842,11 @@ Replace `setup()`:
   async setup(opts: SetupOptions): Promise<void> {
     if (!this.model) {
       throw new Error("Ollama agent requires a model");
+    }
+    if (!this.model.includes(":cloud")) {
+      throw new Error(
+        `Ollama agent supports only cloud models (id must contain ':cloud'); got '${this.model}'.`,
+      );
     }
     await this.preflightDaemon();
     await this.preflightModel();
@@ -676,17 +863,28 @@ Add `buildEnv()`:
 
 ```typescript
   private buildEnv(): Record<string, string> {
-    const baseUrl = this.resolveBaseUrl();
+    const baseUrl = resolveBaseUrl();
     const model = this.model as string;
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
+
+    // Drop undefineds left behind by the spread on optional keys.
+    for (const k of Object.keys(env)) {
+      if (env[k] === undefined) delete env[k];
+    }
+    // Strip any ANTHROPIC_*/CLAUDE_CODE_* leaked from the parent process so a
+    // stale ANTHROPIC_API_KEY (real Anthropic key) cannot reach the inner SDK.
+    for (const k of Object.keys(env)) {
+      if (k.startsWith("ANTHROPIC_") || k.startsWith("CLAUDE_CODE_")) delete env[k];
+    }
+
     env.ANTHROPIC_BASE_URL = baseUrl;
-    env.ANTHROPIC_AUTH_TOKEN = "ollama";
-    env.ANTHROPIC_API_KEY = "";
+    env.ANTHROPIC_AUTH_TOKEN = "ollama";        // sentinel; takes precedence over ANTHROPIC_API_KEY
+    env.ANTHROPIC_API_KEY = "";                 // belt-and-suspenders: ensure no host key sneaks back via SDK defaults
     env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
     env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
     env.CLAUDE_CODE_SUBAGENT_MODEL = model;
-    env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";
+    env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";   // matches `ollama launch claude` Run(); suppresses "Created by Claude Code" attribution
     return env;
   }
 ```
@@ -696,11 +894,11 @@ Replace `runSession()`:
 ```typescript
   runSession(opts: SessionOptions): Promise<IterationResult> {
     const driver = this.requireDriver();
-    const overrides: Partial<SessionOptions> = {};
-    if (this.sessionEnv) overrides.env = this.sessionEnv;
-    return Object.keys(overrides).length > 0
-      ? driver.runSession({ ...opts, ...overrides })
-      : driver.runSession(opts);
+    const { variant: _variant, env: callerEnv, ...rest } = opts as SessionOptions & { variant?: unknown };
+    const mergedEnv = this.sessionEnv
+      ? { ...(callerEnv ?? {}), ...this.sessionEnv }
+      : callerEnv;
+    return driver.runSession({ ...rest, env: mergedEnv } as SessionOptions);
   }
 
   private requireDriver(): ClaudeDriver {
@@ -730,23 +928,25 @@ Replace `teardown()`:
 npx vitest run src/__tests__/ollama-driver.test.ts
 ```
 
-Expected: 11 passed.
+Expected: 20 passed.
 
 - [ ] **Step 7.6: Commit**
 
 ```bash
 git add src/core/drivers/ollama.ts src/__tests__/ollama-driver.test.ts
-git commit -m "feat(ollama): build session env, instantiate inner ClaudeDriver, delegate runSession"
+git commit -m "feat(ollama): build session env (with ANTHROPIC_*/CLAUDE_CODE_* hygiene), strip variant, merge caller env"
 ```
 
 ---
 
-## Task 8: `setup()` env honors `OLLAMA_HOST`
+## Task 8: `setup()` env honors `OLLAMA_HOST` (characterization)
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
 
-- [ ] **Step 8.1: Write the failing test**
+These pin the host-resolution behavior the env builder already inherits from `resolveBaseUrl()`. Pure characterization.
+
+- [ ] **Step 8.1: Add tests**
 
 Add inside `describe("setup()")`:
 
@@ -762,14 +962,13 @@ it("env ANTHROPIC_BASE_URL honors OLLAMA_HOST (host:port → http://...)", async
     prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
     maxTurns: 1, verbosity: "info", unitId: "u1",
   });
-  const calledOpts = innerInstance.runSession.mock.calls[0][0];
-  expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://192.168.1.10:11434");
+  expect(innerInstance.runSession.mock.calls[0][0].env.ANTHROPIC_BASE_URL).toBe("http://192.168.1.10:11434");
 
   await driver.teardown();
 });
 
-it("env ANTHROPIC_BASE_URL preserves OLLAMA_HOST URL form", async () => {
-  process.env.OLLAMA_HOST = "https://my-ollama.example.com";
+it("env ANTHROPIC_BASE_URL preserves OLLAMA_HOST URL form (no double slash)", async () => {
+  process.env.OLLAMA_HOST = "https://my-ollama.example.com/";       // trailing slash
   mockOllamaWith("kimi-k2.6:cloud");
   const driver = new OllamaDriver("kimi-k2.6:cloud");
   await driver.setup({ verbosity: "info" });
@@ -779,26 +978,28 @@ it("env ANTHROPIC_BASE_URL preserves OLLAMA_HOST URL form", async () => {
     prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
     maxTurns: 1, verbosity: "info", unitId: "u1",
   });
-  const calledOpts = innerInstance.runSession.mock.calls[0][0];
-  expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("https://my-ollama.example.com");
+  expect(innerInstance.runSession.mock.calls[0][0].env.ANTHROPIC_BASE_URL).toBe("https://my-ollama.example.com");
 
   await driver.teardown();
 });
+
+it("setup() throws when OLLAMA_HOST is unix-socket form", async () => {
+  process.env.OLLAMA_HOST = "/var/run/ollama.sock";
+  globalThis.fetch = vi.fn();                                        // never reached
+  const driver = new OllamaDriver("kimi-k2.6:cloud");
+  await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(/Unix-socket/);
+});
 ```
 
-- [ ] **Step 8.2: Run tests — should pass (resolveBaseUrl already handles both forms)**
+- [ ] **Step 8.2: Run tests — should pass**
 
-```
-npx vitest run src/__tests__/ollama-driver.test.ts
-```
-
-Expected: 13 passed.
+Expected: 23 passed.
 
 - [ ] **Step 8.3: Commit**
 
 ```bash
 git add src/__tests__/ollama-driver.test.ts
-git commit -m "test(ollama): setup() env honors OLLAMA_HOST in both forms"
+git commit -m "test(ollama): characterize OLLAMA_HOST handling in setup() env (host:port, URL with trailing slash, unix-socket reject)"
 ```
 
 ---
@@ -861,11 +1062,36 @@ it("omits CLAUDE_CODE_AUTO_COMPACT_WINDOW when no [Nk]/[Nm] suffix", async () =>
 
   await driver.teardown();
 });
+
+it("ignores decimal suffix [1.5m] (regex matches integers only)", async () => {
+  // Custom mock: probe must match the exact id including the suffix.
+  globalThis.fetch = vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+    if (u.includes("/v1/models/")) {
+      const id = decodeURIComponent(u.replace(/.*\/v1\/models\//, ""));
+      return new Response(JSON.stringify({ id }), { status: id === "weird-model:cloud[1.5m]" ? 200 : 404 });
+    }
+    return new Response("", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const driver = new OllamaDriver("weird-model:cloud[1.5m]");
+  await driver.setup({ verbosity: "info" });
+
+  const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+  await driver.runSession({
+    prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+    maxTurns: 1, verbosity: "info", unitId: "u1",
+  });
+  expect(innerInstance.runSession.mock.calls[0][0].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+
+  await driver.teardown();
+});
 ```
 
 - [ ] **Step 9.2: Run tests — first two must fail (variable not set)**
 
-Expected: 2 failures (the `[1m]` and `[200k]` cases). The "omits" case passes because the env builder doesn't set it yet.
+Expected: 2 failures (the `[1m]` and `[200k]` cases). The "omits" + decimal cases pass because the env builder doesn't set the var yet.
 
 - [ ] **Step 9.3: Implement `parseContextWindow()` and add to `buildEnv()`**
 
@@ -877,6 +1103,7 @@ In `src/core/drivers/ollama.ts`, add a module-level helper above the class decla
  * `deepseek-v4-pro:cloud[1m]` → 1_000_000, `foo:cloud[200k]` → 200_000.
  * Returns null if the model has no `[Nk]`/`[Nm]` suffix; the caller then
  * omits CLAUDE_CODE_AUTO_COMPACT_WINDOW and Claude Code uses its default.
+ * Decimals (`[1.5m]`) and other units intentionally do not match.
  */
 function parseContextWindow(model: string): number | null {
   const match = /\[(\d+)([km])\]/i.exec(model);
@@ -898,7 +1125,7 @@ In `buildEnv()`, after the `CLAUDE_CODE_ATTRIBUTION_HEADER` line, add:
 
 - [ ] **Step 9.4: Run tests — all should pass**
 
-Expected: 16 passed.
+Expected: 27 passed.
 
 - [ ] **Step 9.5: Commit**
 
@@ -909,57 +1136,90 @@ git commit -m "feat(ollama): parse [Nk]/[Nm] suffix into CLAUDE_CODE_AUTO_COMPAC
 
 ---
 
-## Task 10: `startChat()` injects env into inner driver
+## Task 10: `startChat()` injects env, merges caller env, strips variant
 
 **Files:**
 - Modify: `src/__tests__/ollama-driver.test.ts`
 - Modify: `src/core/drivers/ollama.ts`
 
-- [ ] **Step 10.1: Write the failing test**
+- [ ] **Step 10.1: Write the failing tests**
 
-Add inside `describe("setup()")` (or a new sibling `describe("startChat()")`):
+Add inside `describe("OllamaDriver", ...)`:
 
 ```typescript
-it("startChat() forwards sessionEnv to the inner ClaudeDriver", async () => {
-  mockOllamaWith("kimi-k2.6:cloud");
-  const driver = new OllamaDriver("kimi-k2.6:cloud");
-  await driver.setup({ verbosity: "info" });
+describe("startChat()", () => {
+  it("forwards sessionEnv to the inner ClaudeDriver", async () => {
+    mockOllamaWith("kimi-k2.6:cloud");
+    const driver = new OllamaDriver("kimi-k2.6:cloud");
+    await driver.setup({ verbosity: "info" });
 
-  const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
-  driver.startChat({ cwd: "/tmp", verbosity: "info" });
+    const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+    driver.startChat({ cwd: "/tmp", verbosity: "info" });
 
-  expect(innerInstance.startChat).toHaveBeenCalledTimes(1);
-  const calledOpts = innerInstance.startChat.mock.calls[0][0];
-  expect(calledOpts.env).toBeDefined();
-  expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:11434");
-  expect(calledOpts.env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+    expect(innerInstance.startChat).toHaveBeenCalledTimes(1);
+    const calledOpts = innerInstance.startChat.mock.calls[0][0];
+    expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:11434");
+    expect(calledOpts.env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
 
-  await driver.teardown();
+    await driver.teardown();
+  });
+
+  it("strips opts.variant before delegating", async () => {
+    mockOllamaWith("kimi-k2.6:cloud");
+    const driver = new OllamaDriver("kimi-k2.6:cloud");
+    await driver.setup({ verbosity: "info" });
+
+    const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+    driver.startChat({ cwd: "/tmp", verbosity: "info", variant: "high" } as any);
+
+    expect(innerInstance.startChat.mock.calls[0][0].variant).toBeUndefined();
+
+    await driver.teardown();
+  });
+
+  it("merges caller opts.env (caller wins for unmanaged keys)", async () => {
+    mockOllamaWith("kimi-k2.6:cloud");
+    const driver = new OllamaDriver("kimi-k2.6:cloud");
+    await driver.setup({ verbosity: "info" });
+
+    const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+    driver.startChat({
+      cwd: "/tmp",
+      verbosity: "info",
+      env: { CUSTOM_USER_VAR: "x", ANTHROPIC_AUTH_TOKEN: "should-be-overridden" } as Record<string, string>,
+    } as any);
+
+    const env = innerInstance.startChat.mock.calls[0][0].env;
+    expect(env.CUSTOM_USER_VAR).toBe("x");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+
+    await driver.teardown();
+  });
 });
 ```
 
-- [ ] **Step 10.2: Run test — must fail**
+- [ ] **Step 10.2: Run tests — must fail**
 
 `startChat()` still throws "Not implemented yet".
 
-- [ ] **Step 10.3: Implement `startChat()` (delegation with env override)**
+- [ ] **Step 10.3: Implement `startChat()` (delegation with env merge + variant strip)**
 
 In `src/core/drivers/ollama.ts`, replace `startChat()`:
 
 ```typescript
   startChat(opts: ChatOptions): AsyncIterable<ChatEvent> {
     const driver = this.requireDriver();
-    const overrides: Partial<ChatOptions> = {};
-    if (this.sessionEnv) overrides.env = this.sessionEnv;
-    return Object.keys(overrides).length > 0
-      ? driver.startChat({ ...opts, ...overrides })
-      : driver.startChat(opts);
+    const { variant: _variant, env: callerEnv, ...rest } = opts as ChatOptions & { variant?: unknown };
+    const mergedEnv = this.sessionEnv
+      ? { ...(callerEnv ?? {}), ...this.sessionEnv }
+      : callerEnv;
+    return driver.startChat({ ...rest, env: mergedEnv } as ChatOptions);
   }
 ```
 
 - [ ] **Step 10.4: Run tests — must pass**
 
-Expected: 17 passed.
+Expected: 30 passed.
 
 - [ ] **Step 10.5: Commit**
 
@@ -1034,7 +1294,7 @@ In `src/core/drivers/ollama.ts`, replace each:
 
 - [ ] **Step 11.4: Run tests — must pass**
 
-Expected: 19 passed.
+Expected: 32 passed.
 
 - [ ] **Step 11.5: Commit**
 
@@ -1076,7 +1336,7 @@ describe("teardown()", () => {
 npx vitest run src/__tests__/ollama-driver.test.ts
 ```
 
-Expected: 20 passed.
+Expected: 33 passed.
 
 - [ ] **Step 12.3: Commit**
 
@@ -1128,7 +1388,7 @@ In the `switch (agent)` block, before `default`, add:
 npm test
 ```
 
-Expected: full suite passes (existing tests + 20 new OllamaDriver tests).
+Expected: full suite passes (existing tests + ~33 new OllamaDriver tests). `Reviewer` (built from `AgentTypeSchema`) now accepts `"ollama"` automatically — no separate edit needed.
 
 - [ ] **Step 13.4: Commit**
 
@@ -1175,7 +1435,7 @@ git commit -m "feat(ollama): add ollama to --agent CLI help text"
 
 ---
 
-## Task 15: UI dropdown — add `Ollama` to all four agent lists
+## Task 15: UI dropdown — add `Ollama` to all four agent lists + extend "No user settings" gate
 
 **Files:**
 - Modify: `ui/src/components/AgentWizard.vue`
@@ -1185,18 +1445,9 @@ git commit -m "feat(ollama): add ollama to --agent CLI help text"
 
 Each file contains a literal array of agent options. Insert the new entry after the existing `Codex` line (last in the list) so ordering stays consistent.
 
-- [ ] **Step 15.1: Modify `ui/src/components/AgentWizard.vue` (line ~219)**
+- [ ] **Step 15.1: Modify `ui/src/components/AgentWizard.vue`**
 
-Replace:
-
-```typescript
-  { label: "Claude", value: "claude" },
-  { label: "OpenCode", value: "opencode" },
-  { label: "CCS", value: "ccs" },
-  { label: "Codex", value: "codex" },
-```
-
-with:
+(a) Around line 219, extend the agent options:
 
 ```typescript
   { label: "Claude", value: "claude" },
@@ -1206,19 +1457,18 @@ with:
   { label: "Ollama", value: "ollama" },
 ```
 
-Then verify the existing conditionals in this file gate the effort/variant dropdown by agent. Around line 129 the file has:
-
-```typescript
-return step.agent === "claude" || step.agent === "ccs" ? "Effort" : "Variant";
-```
-
-and around line 483:
+(b) Find the "No user settings" checkbox `v-if`. In the wizard it is gated by `agent === 'claude' || agent === 'ccs'`. Extend to include ollama (because `OllamaDriver(model, useUserSettings)` accepts the flag):
 
 ```html
-<label>{{ agent === 'claude' || agent === 'ccs' ? 'Effort' : 'Variant' }}</label>
+<Checkbox v-if="agent === 'claude' || agent === 'ccs' || agent === 'ollama'" v-model="useUserSettings" ... />
 ```
 
-`ollama` is intentionally absent from these — by design (per spec §4) the Ollama agent has no effort/variant dropdown. Confirm by reading around lines 480-575 that the variant input is rendered for all agents though, as a generic field; if so, leave it alone (the model dropdown alone is what we control via `listModels()` returning no `variants`). **Do not** add Ollama-specific gates for variant unless a test fails.
+(c) Verify, **but do not modify**, the variant/effort plumbing. Two places use agent-keyed labels:
+
+- Around line 129: `return step.agent === "claude" || step.agent === "ccs" ? "Effort" : "Variant";` — picks the visible label only. For ollama it falls into the `"Variant"` branch; harmless because step (b) below ensures the input is hidden.
+- Around line 483: `<label>{{ agent === 'claude' || agent === 'ccs' ? 'Effort' : 'Variant' }}</label>` — same logic.
+
+The actual visibility is gated by `v-if="variantOptions.length > 0"` on the dropdown itself. `OllamaDriver.listModels()` returns `ModelEntry`s with no `variants` field, so `computeVariantOptions` returns `[]` and the dropdown is hidden. This is the intended behavior per spec §Goals: the dropdown is **hidden, not disabled**. Driver-side, `runSession()`/`startChat()` already strip `opts.variant` (Task 7 / Task 10) so any stale persisted value can't reach the SDK. Do not add an ollama-specific `v-if` here unless a test fails.
 
 - [ ] **Step 15.2: Modify `ui/src/views/TaskListView.vue` (line ~134)**
 
@@ -1232,66 +1482,144 @@ Same change as above.
 
 Same change as above.
 
-- [ ] **Step 15.5: Verify Vue type-check still passes**
-
-```
-npx vue-tsc --noEmit --project ui/tsconfig.json
-```
-
-Expected: no errors. (Vite skips type-check during build, so this is the only place we catch UI type drift.)
-
-- [ ] **Step 15.6: Run UI build to ensure the SFC compiles**
+- [ ] **Step 15.5: Run UI build to ensure the SFC compiles**
 
 ```
 npm run build:ui
 ```
 
-Expected: build succeeds.
+Expected: Vite build succeeds.
 
-- [ ] **Step 15.7: Commit**
+(Note: `vue-tsc` is **not** in `ui/package.json`. The CLAUDE.md mention of `npx vue-tsc --noEmit --project ui/tsconfig.json` is aspirational — running it on a clean machine fails with "missing packages: vue-tsc". Type-checking Vue SFCs is out of scope for this task; rely on Vite for syntax validation.)
+
+- [ ] **Step 15.6: Commit**
 
 ```bash
 git add ui/src/components/AgentWizard.vue ui/src/views/TaskListView.vue ui/src/views/TaskDetailView.vue ui/src/views/ExecutionView.vue
-git commit -m "feat(ollama): add Ollama option to UI agent dropdowns"
+git commit -m "feat(ollama): add Ollama option to UI agent dropdowns and extend useUserSettings gate"
 ```
 
 ---
 
-## Task 16: Documentation
+## Task 16: Update `/api/models` server route
+
+**Files:**
+- Modify: `src/server/routes/models.ts`
+
+The route currently calls `setup()` for every agent except `ccs`/`codex` and lifetime-caches non-`ccs` results. For `ollama` this would (a) fail because `setup()` requires a model the route does not pass, and (b) cache the empty list across daemon-state changes (signin / signout / daemon restart). Both must be fixed before the UI dropdown can work.
+
+- [ ] **Step 16.1: Extend the `needsSetup` exemption to `"ollama"`**
+
+In `src/server/routes/models.ts` (around line 41-43):
+
+```typescript
+      // CCS listModels() is a pure file scan — no setup/teardown needed
+      // Codex listModels() reads ~/.codex/models_cache.json — no setup/teardown needed
+      // Ollama listModels() probes the local daemon directly — no setup/teardown needed (and setup() requires a model)
+      const needsSetup = agent !== "ccs" && agent !== "codex" && agent !== "ollama";
+```
+
+- [ ] **Step 16.2: Skip caching for `ollama` (mirror `ccs` semantics)**
+
+In the same file, change the cache-check guard so `ollama` always re-probes the daemon:
+
+```typescript
+      // CCS: pure file scan — re-scan on every request.
+      // Ollama: per-request probe of /v1/models/<id> — re-probe so signin/signout becomes visible.
+      if (agent !== "ccs" && agent !== "ollama") {
+        const cached = cache.get(agent);
+        if (cached) {
+          const models = await cached;
+          return { models };
+        }
+      }
+```
+
+And the cache-write block:
+
+```typescript
+      if (agent !== "ccs" && agent !== "ollama") {
+        cache.set(agent, promise);
+      }
+```
+
+```typescript
+        if (agent !== "ccs" && agent !== "ollama") {
+          // Codex: do not cache empty results — CLI may not be running yet (no ~/.codex/models_cache.json)
+          if (agent === "codex" && models.length === 0) {
+            cache.delete(agent);
+          } else {
+            cache.set(agent, models);
+          }
+        }
+```
+
+- [ ] **Step 16.3: Run the full suite to confirm nothing else broke**
+
+```
+npm test
+```
+
+Expected: full suite passes (existing tests still green; no new tests added for the route — covered by manual verification in Task 18).
+
+- [ ] **Step 16.4: Commit**
+
+```bash
+git add src/server/routes/models.ts
+git commit -m "feat(ollama): /api/models route skips setup() and cache for ollama"
+```
+
+---
+
+## Task 17: Documentation
 
 **Files:**
 - Modify: `.claude/rules/drivers.md`
+- Modify: `.claude/rules/frontend.md`
 - Modify: `CLAUDE.md`
+- Modify: `README.md`
 
-- [ ] **Step 16.1: Append `OllamaDriver` section to `.claude/rules/drivers.md`**
+- [ ] **Step 17.1: Append `OllamaDriver` section to `.claude/rules/drivers.md`**
 
 Add after the `CodexDriver` section:
 
 ```markdown
 ## OllamaDriver
 
-Standalone driver wrapping `ClaudeDriver` via composition (same pattern as `CcsDriver`). Routes the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud[1m]` and `kimi-k2.6:cloud` without depending on a CCS proxy.
+Standalone driver wrapping `ClaudeDriver` via composition (same pattern as `CcsDriver`). Routes the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides — host:port gets `http://` prepended, full URL kept verbatim with trailing slash stripped, unix-socket / whitespace forms rejected). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud[1m]` and `kimi-k2.6:cloud` without depending on a CCS proxy.
 
-**Setup**: preflight = HTTP `GET /api/version` (daemon up?) + `GET /v1/models` filter (`:cloud`) to verify the requested cloud model is accessible (proxy for "signed in"). Throws actionable errors otherwise.
+**Setup**:
+- Reject non-cloud models (id must contain `:cloud`).
+- Probe `/api/version` (daemon up?) within `OLLAMA_PREFLIGHT_TIMEOUT_MS` (default 5s).
+- Probe `GET /v1/models/<id>` for the requested model: 200 → accessible, 404 → "check ollama signin", 5xx/timeout/network → distinct "transient daemon" error (not auth misdiagnosis).
+- The bulk `GET /v1/models` is intentionally NOT used — on Ollama 0.23.1 it returns `{"data":null}` even for signed-in cloud profiles.
 
-**Per-session env** (mirrors `ollama launch claude --model <name>`):
+**Catalog**: `listModels()` returns the intersection of a hardcoded `OLLAMA_CLOUD_CATALOG` (mirroring `cmd/launch/claude.go` upstream) and the per-model 200-OK probes. No `variants` field — UI hides the effort dropdown.
+
+**Per-session env** (closely mirrors `ollama launch claude --model <name>`, with one intentional divergence — see below):
 
 - `ANTHROPIC_BASE_URL=<resolved daemon URL>`
-- `ANTHROPIC_AUTH_TOKEN=ollama` (sentinel — daemon recognizes it)
-- `ANTHROPIC_API_KEY=""` (explicit empty so a stray host env var does not leak)
+- `ANTHROPIC_AUTH_TOKEN=ollama` (sentinel — daemon recognizes it; takes precedence over ANTHROPIC_API_KEY in upstream `claude`)
+- `ANTHROPIC_API_KEY=""` (belt-and-suspenders: prevents host-env keys from sneaking in via SDK defaults)
 - `ANTHROPIC_DEFAULT_OPUS_MODEL`/`SONNET_MODEL`/`HAIKU_MODEL` = chosen model
 - `CLAUDE_CODE_SUBAGENT_MODEL` = chosen model
 - `CLAUDE_CODE_ATTRIBUTION_HEADER=0`
-- `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = parsed from `[1m]`/`[200k]` suffix; omitted when no suffix.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = parsed from `[Nm]/[Nk]` suffix in the model id; omitted when no suffix. **Intentional divergence** from upstream's `lookupCloudModelLimit()`: simpler and avoids drift in a hardcoded model→context map.
 
-**Models**: `listModels()` queries the daemon's OpenAI-compat `/v1/models` and filters to entries whose `id` contains `:cloud`. No `variants` field — UI hides the effort dropdown.
+**Env hygiene**: before applying overrides, all `ANTHROPIC_*`/`CLAUDE_CODE_*` keys leaking from the parent process are stripped. Other env (PATH, HOME, language, proxies, etc.) is preserved.
+
+**Variant**: `runSession()`/`startChat()` strip `opts.variant` before delegating. Cloud non-Claude models do not honor Claude's `effort` knob; persisted CLI/UI variants would otherwise leak through.
 
 **Auth**: relies entirely on the user's `ollama signin` (Ed25519 key in `~/.ollama/id_ed25519`). prorab never reads upstream tokens or signs requests itself; the daemon does.
+
+**Mid-session failures**: signout / daemon crash / cloud-revoke during a session surface as a `signal:error` from the SDK. `run.ts` stops the iteration; the task remains `in-progress` for resumption. We deliberately do not re-run preflight mid-session.
 ```
 
-- [ ] **Step 16.2: Update `CLAUDE.md`**
+- [ ] **Step 17.2: Update `.claude/rules/frontend.md`**
 
-In the "Tech Stack" / drivers list and the `--agent` enumeration, add `ollama`. Specifically:
+In the agent dropdown / store description, add `ollama` alongside the other agent values. Keep the order Claude → OpenCode → CCS → Codex → Ollama.
+
+- [ ] **Step 17.3: Update `CLAUDE.md`**
 
 In the `## Architecture` section (around the `core/drivers/` description), change:
 
@@ -1321,60 +1649,82 @@ to:
 
 In the `## Modular Docs` section, the `drivers.md` bullet remains valid (we just appended a section).
 
-- [ ] **Step 16.3: Commit**
+- [ ] **Step 17.4: Update `README.md`**
+
+The README mentions the supported agents in four places (around lines 14, 73, 85, 120). Add `Ollama` to each:
+
+- L14: `Multi-agent — Claude, OpenCode, CCS, Codex, Ollama — different models for different stages`
+- L73: `Multi-agent support: Claude, OpenCode, CCS, Codex, Ollama`
+- L85 area: add a bullet under the agent backends list — `Ollama` (relies on the local `ollama serve` daemon and `ollama signin` for cloud models)
+- L120 area (CLI flags table): update the `--agent <type>` row to `Agent backend: claude, opencode, ccs, codex, ollama`
+
+- [ ] **Step 17.5: Commit**
 
 ```bash
-git add .claude/rules/drivers.md CLAUDE.md
-git commit -m "docs(ollama): document OllamaDriver in drivers.md and CLAUDE.md"
+git add .claude/rules/drivers.md .claude/rules/frontend.md CLAUDE.md README.md
+git commit -m "docs(ollama): document OllamaDriver in drivers.md, frontend.md, CLAUDE.md, README.md"
 ```
 
 ---
 
-## Task 17: End-to-end manual verification
+## Task 18: End-to-end manual verification
 
 **Files:** none (manual session, no edits — this task confirms the implementation works against a real daemon).
 
-- [ ] **Step 17.1: Confirm prerequisites**
+- [ ] **Step 18.1: Confirm prerequisites**
 
 ```
 ollama --version
-ollama list
+curl -s http://127.0.0.1:11434/api/version
 ls ~/.ollama/id_ed25519
 ```
 
-Expected: ollama installed, daemon should be running already (otherwise start with `ollama serve` in another terminal), and the Ed25519 key file exists (created on first daemon start; signin already done if cloud models work in `ollama launch claude`).
+Expected: ollama installed, daemon running (otherwise `ollama serve` in another terminal), Ed25519 key file present (created on first daemon start; signin already done if cloud models work in `ollama launch claude`).
 
-- [ ] **Step 17.2: Run prorab serve and check the UI**
+- [ ] **Step 18.2: Run prorab serve and check the UI**
 
 ```
 npm run build && node dist/index.js serve
 ```
 
-Open the printed `http://127.0.0.1:<port>` URL. In the agent dropdown choose **Ollama**. The model dropdown should populate with whatever `*:cloud` models the daemon reports. Pick `deepseek-v4-pro:cloud[1m]`. Run a small task. Verify you see normal Claude Code SDK output (not 401).
+Open the printed `http://127.0.0.1:<port>` URL. In the agent dropdown choose **Ollama**. The model dropdown should populate with the cloud models from `OLLAMA_CLOUD_CATALOG` that the daemon serves (probed via `/v1/models/<id>`). Pick `deepseek-v4-pro:cloud[1m]`. Run a small task. Verify you see normal Claude Code SDK output (not 401).
 
-- [ ] **Step 17.3: Confirm fail modes**
+- [ ] **Step 18.3: Confirm fail modes**
 
-Stop the daemon (`pkill ollama` in another terminal) and re-run a task — `setup()` should fail with `Ollama daemon is not reachable at http://127.0.0.1:11434. Start it with: ollama serve`.
+(a) **Daemon down.** Stop the daemon (`pkill ollama`). Re-run a task → `setup()` should fail with:
+> `Ollama daemon is not reachable at http://127.0.0.1:11434. Start it with: ollama serve`
 
-Restart the daemon. Run `ollama signout` (this leaves the daemon up but removes cloud-account access — `/v1/models` will not list `:cloud` models). Re-run a task — `setup()` should fail with `Model '<m>' is not available via ollama. Check 'ollama signin' status, ...`.
+(b) **Signed-out / model unavailable.** Restart the daemon. Run `ollama signout`. Re-run a task → `setup()` should fail with:
+> `Model '<m>' is not available via ollama. Check 'ollama signin' status, or pick from: <catalog>`
+
+(c) **Non-cloud model rejected.** Try `--model llama3.2:3b` → `setup()` rejects with:
+> `Ollama agent supports only cloud models (id must contain ':cloud'); got 'llama3.2:3b'.`
+
+(d) **Bad OLLAMA_HOST.** `OLLAMA_HOST=/var/run/ollama.sock node dist/index.js run --agent ollama --model kimi-k2.6:cloud` → throws `Unix-socket OLLAMA_HOST ...`.
 
 `ollama signin` again to restore.
 
-- [ ] **Step 17.4: Document the verification outcome**
+- [ ] **Step 18.4: Document the verification outcome**
 
-If anything fails or behaves unexpectedly: open an issue and stop. Otherwise, record "verified on 2026-05-06 against ollama 0.23.1 with deepseek-v4-pro:cloud[1m]" in the PR description.
+Record "verified on 2026-05-06 against ollama 0.23.1 with deepseek-v4-pro:cloud[1m]" in the PR description. If running headless / in CI where this task cannot execute, note "manual verification skipped — no daemon" in the PR description and call this out for human follow-up.
 
-- [ ] **Step 17.5: No commit** (this task is a manual smoke test).
+- [ ] **Step 18.5: No commit** (this task is a manual smoke test).
 
 ---
 
 ## Pre-PR Cleanup
 
-Per `/home/zinin/.claude/CLAUDE.md`, design and plan documents under `docs/superpowers/` must NOT appear in the PR diff. Before opening the PR:
+Per `/home/zinin/.claude/CLAUDE.md`, design and plan documents under `docs/superpowers/` must NOT appear in the PR diff. Before opening the PR, remove **all** ollama-driver artifacts under `docs/superpowers/`:
 
 ```bash
-git rm docs/superpowers/specs/2026-05-06-ollama-agent-design.md docs/superpowers/plans/2026-05-06-ollama-driver.md
-git commit -m "chore: drop ollama-driver design + plan docs before PR"
+git rm \
+  docs/superpowers/specs/2026-05-06-ollama-agent-design.md \
+  docs/superpowers/specs/2026-05-06-ollama-agent-review-merged-iter-*.md \
+  docs/superpowers/specs/2026-05-06-ollama-agent-review-iter-*.md \
+  docs/superpowers/plans/2026-05-06-ollama-driver.md \
+  docs/superpowers/plans/2026-05-06-ollama-driver-execution-prompt.md \
+  2>/dev/null || true
+git commit -m "chore: drop ollama-driver design + plan + review docs before PR"
 ```
 
 The documents stay accessible via the branch's git history if needed later.
@@ -1383,9 +1733,18 @@ The documents stay accessible via the branch's git history if needed later.
 
 ## Self-Review Checklist (run at end of implementation)
 
-- [ ] All 9 spec tests have a corresponding task: skeleton (Task 1), `:cloud` filter (Task 3), daemon-down preflight (Task 5), missing-cloud-model preflight (Task 6), env contents (Task 7), `OLLAMA_HOST` (Task 8), `AUTO_COMPACT_WINDOW` (Task 9), env injection on runSession + startChat (Tasks 7 + 10), listModels error contract (Task 2). ✓
+- [ ] All 13 design test groups have a corresponding plan task: skeleton (Task 1), catalog probe + URL encoding (Task 2), `OLLAMA_HOST` characterization (Tasks 3 + 8), cloud-only guard (Task 4), daemon preflight (Task 5), per-model 404/5xx disambiguation (Task 6), env contents + hygiene + variant strip + env merge (Task 7), `AUTO_COMPACT_WINDOW` incl. decimal reject (Task 9), startChat env+merge+strip (Task 10), chat delegation + `not initialized` guard (Task 11), teardown (Task 12). ✓
+- [ ] CRIT findings from review iter-1 are addressed:
+  - CRIT-1 (`/api/models` route) → Task 16. ✓
+  - CRIT-2 (`/v1/models` data:null) → hardcoded catalog + per-model probe in Tasks 2 + 6. ✓
+  - CRIT-3 (cloud-only + variant leak) → Tasks 4 + 7 + 10. ✓
+  - CRIT-4 (OLLAMA_HOST normalization) → Tasks 2 + 3 + 8. ✓
+  - CRIT-5 (env hygiene) → Task 7. ✓
+  - CRIT-6 (network mis-diagnosed as auth) → Task 6 disambiguation. ✓
+  - CRIT-7 (5s timeout configurable) → `PREFLIGHT_TIMEOUT_MS` constant in Task 2 + `OLLAMA_PREFLIGHT_TIMEOUT_MS` env in design. ✓
 - [ ] Type names match across tasks: `OllamaDriver`, `AgentDriver`, `SessionOptions`, `ChatOptions`, `ModelEntry`, `IterationResult`, `AgentTypeSchema`, `ClaudeDriver`. ✓
 - [ ] No "TBD"/"TODO"/"similar to Task N" placeholders in any code block. ✓
 - [ ] Every step that changes code shows the actual code or exact diff. ✓
 - [ ] Commit messages are scoped (`feat(ollama)`, `test(ollama)`, `docs(ollama)`, `chore`). ✓
-- [ ] Pre-PR cleanup removes `docs/superpowers/specs/...` and `docs/superpowers/plans/...`. ✓
+- [ ] Pre-PR cleanup removes design + plan + review iter + execution-prompt docs from `docs/superpowers/`. ✓
+- [ ] No `vue-tsc` invocation (not installed in `ui/package.json`); UI verification runs through `npm run build:ui` only. ✓
