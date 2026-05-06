@@ -398,6 +398,20 @@ describe("OllamaDriver", () => {
     });
   });
 
+  describe("teardown()", () => {
+    it("clears inner driver and sessionEnv; subsequent calls throw", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.teardown();
+
+      expect(innerInstance.teardown).toHaveBeenCalledTimes(1);
+      expect(() => driver.runSession({} as any)).toThrow(/not initialized/);
+      expect(() => driver.sendMessage("x")).toThrow(/not initialized/);
+    });
+  });
+
   describe("listModels()", () => {
     it("returns [] when daemon /api/version rejects", async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
