@@ -50,6 +50,24 @@ describe("OllamaDriver", () => {
       );
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
+
+    it("throws when daemon /api/version fetch rejects", async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /daemon is not reachable.*ollama serve/,
+      );
+    });
+
+    it("throws when daemon /api/version returns non-OK", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response("err", { status: 500 }),
+      );
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /daemon is not reachable/,
+      );
+    });
   });
 
   describe("listModels()", () => {

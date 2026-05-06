@@ -66,7 +66,27 @@ export class OllamaDriver implements AgentDriver {
         `Ollama agent supports only cloud models (id must contain ':cloud'); got '${this.model}'.`,
       );
     }
+    await this.preflightDaemon();
     throw new Error("Not implemented yet");
+  }
+
+  private async preflightDaemon(): Promise<void> {
+    const baseUrl = resolveBaseUrl();
+    let resp: Response;
+    try {
+      resp = await fetch(`${baseUrl}/api/version`, {
+        signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error(
+        `Ollama daemon is not reachable at ${baseUrl}. Start it with: ollama serve`,
+      );
+    }
+    if (!resp.ok) {
+      throw new Error(
+        `Ollama daemon is not reachable at ${baseUrl}. Start it with: ollama serve`,
+      );
+    }
   }
 
   async teardown(): Promise<void> {
