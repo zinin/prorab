@@ -206,6 +206,45 @@ describe("OllamaDriver", () => {
 
       await driver.teardown();
     });
+
+    it("env ANTHROPIC_BASE_URL honors OLLAMA_HOST (host:port → http://...)", async () => {
+      process.env.OLLAMA_HOST = "192.168.1.10:11434";
+      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      expect(innerInstance.runSession.mock.calls[0][0].env.ANTHROPIC_BASE_URL).toBe("http://192.168.1.10:11434");
+
+      await driver.teardown();
+    });
+
+    it("env ANTHROPIC_BASE_URL preserves OLLAMA_HOST URL form (no double slash)", async () => {
+      process.env.OLLAMA_HOST = "https://my-ollama.example.com/";       // trailing slash
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      expect(innerInstance.runSession.mock.calls[0][0].env.ANTHROPIC_BASE_URL).toBe("https://my-ollama.example.com");
+
+      await driver.teardown();
+    });
+
+    it("setup() throws when OLLAMA_HOST is unix-socket form", async () => {
+      process.env.OLLAMA_HOST = "/var/run/ollama.sock";
+      globalThis.fetch = vi.fn();                                        // never reached
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(/Unix-socket/);
+    });
   });
 
   describe("listModels()", () => {
