@@ -67,6 +67,7 @@ export class OllamaDriver implements AgentDriver {
       );
     }
     await this.preflightDaemon();
+    await this.preflightModel();
     throw new Error("Not implemented yet");
   }
 
@@ -85,6 +86,34 @@ export class OllamaDriver implements AgentDriver {
     if (!resp.ok) {
       throw new Error(
         `Ollama daemon is not reachable at ${baseUrl}. Start it with: ollama serve`,
+      );
+    }
+  }
+
+  private async preflightModel(): Promise<void> {
+    const baseUrl = resolveBaseUrl();
+    const url = `${baseUrl}/v1/models/${encodeURIComponent(this.model as string)}`;
+    let resp: Response;
+    try {
+      resp = await fetch(url, { signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS) });
+    } catch (err) {
+      throw new Error(
+        `Ollama daemon at ${baseUrl} failed to verify model '${this.model}': ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
+      );
+    }
+    if (resp.status === 404) {
+      const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
+      throw new Error(
+        `Model '${this.model}' is not available via ollama. ` +
+          `Check 'ollama signin' status, or pick from: ${catalog}`,
+      );
+    }
+    if (!resp.ok) {
+      throw new Error(
+        `Ollama daemon at ${baseUrl} failed to verify model '${this.model}': ` +
+          `HTTP ${resp.status}. The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
       );
     }
   }

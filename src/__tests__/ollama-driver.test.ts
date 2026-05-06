@@ -68,6 +68,48 @@ describe("OllamaDriver", () => {
         /daemon is not reachable/,
       );
     });
+
+    it("throws 'not available / signin' when /v1/models/<id> returns 404", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        if (u.includes("/v1/models/")) return new Response(JSON.stringify({}), { status: 404 });
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /Model 'deepseek-v4-pro:cloud\[1m\]' is not available.*ollama signin/,
+      );
+    });
+
+    it("throws 'transient daemon issue' when /v1/models/<id> returns 5xx", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        if (u.includes("/v1/models/")) return new Response("upstream gone", { status: 503 });
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /failed to verify model.*transiently overloaded|daemon at .* failed to verify/,
+      );
+    });
+
+    it("throws 'transient daemon issue' when /v1/models/<id> fetch rejects", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        if (u.includes("/v1/models/")) throw new Error("ECONNRESET");
+        return new Response("nope", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /failed to verify model/,
+      );
+    });
   });
 
   describe("listModels()", () => {
