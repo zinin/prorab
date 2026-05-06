@@ -35,7 +35,7 @@ program
 program
   .command("run")
   .description("Execute tasks from task-master autonomously")
-  .option("--agent <type>", 'Agent backend: "claude", "opencode", "ccs", or "codex"', "claude")
+  .option("--agent <type>", 'Agent backend: "claude", "opencode", "ccs", "codex", or "ollama"', "claude")
   .option("--model <model>", "Model for the agent (optional)")
   .option("--variant <variant>", "Effort level (Claude: low/medium/high/max) or model variant (OpenCode)")
   .option("--max-retries <number>", "Max retry attempts per task", "3")
