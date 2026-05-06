@@ -208,6 +208,7 @@ const expandAgentOptions = [
   { label: "OpenCode", value: "opencode" },
   { label: "CCS", value: "ccs" },
   { label: "Codex", value: "codex" },
+  { label: "Ollama", value: "ollama" },
 ];
 
 const expandVariantOptions = computed(() =>

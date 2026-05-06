@@ -220,6 +220,7 @@ const agentOptions = [
   { label: "OpenCode", value: "opencode" },
   { label: "CCS", value: "ccs" },
   { label: "Codex", value: "codex" },
+  { label: "Ollama", value: "ollama" },
 ];
 
 const variantOptions = computed(() =>
@@ -567,7 +568,7 @@ function onSubmit() {
         <span class="wizard-section-label">Settings</span>
       </div>
 
-      <label v-if="mode !== 'refine-tasks' && (agent === 'claude' || agent === 'ccs')" class="wizard-checkbox">
+      <label v-if="mode !== 'refine-tasks' && (agent === 'claude' || agent === 'ccs' || agent === 'ollama')" class="wizard-checkbox">
         <Checkbox v-model="noUserSettings" :binary="true" />
         No user settings
       </label>

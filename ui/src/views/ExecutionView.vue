@@ -181,6 +181,7 @@ const agentOptions = [
   { label: "OpenCode", value: "opencode" },
   { label: "CCS", value: "ccs" },
   { label: "Codex", value: "codex" },
+  { label: "Ollama", value: "ollama" },
 ];
 
 const isRunning = computed(() => execStore.state !== "idle");
