@@ -68,6 +68,18 @@ describe("OllamaDriver", () => {
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
+    it("accepts -cloud variant in model id", async () => {
+      mockOllamaWith("qwen3-coder:480b-cloud[1m]");
+      const driver = new OllamaDriver("qwen3-coder:480b-cloud[1m]");
+      await expect(driver.setup({ verbosity: "info" })).resolves.toBeUndefined();
+    });
+
+    it("accepts gpt-oss:120b-cloud (-cloud, no suffix)", async () => {
+      mockOllamaWith("gpt-oss:120b-cloud");
+      const driver = new OllamaDriver("gpt-oss:120b-cloud");
+      await expect(driver.setup({ verbosity: "info" })).resolves.toBeUndefined();
+    });
+
     it("throws when daemon /api/version fetch rejects", async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
       const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");

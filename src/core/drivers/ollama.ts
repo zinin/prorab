@@ -96,9 +96,9 @@ export class OllamaDriver implements AgentDriver {
     if (!this.model) {
       throw new Error("Ollama agent requires a model");
     }
-    if (!this.model.includes(":cloud")) {
+    if (!this.model.includes(":cloud") && !this.model.includes("-cloud")) {
       throw new Error(
-        `Ollama agent supports only cloud models (id must contain ':cloud'); got '${this.model}'.`,
+        `Ollama agent supports only cloud models (id must contain ':cloud' or '-cloud'); got '${this.model}'.`,
       );
     }
     await this.preflightDaemon();
