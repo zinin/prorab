@@ -36,7 +36,7 @@ Pure function `computeViewMode(flags: ViewModeFlags): ViewMode` in `views/task-l
 
 ## AgentWizard (`components/AgentWizard.vue`)
 
-Dual-mode via `mode` prop (`'chat'`/`'parse-prd'`). Chat: textarea, "New Chat", "Start". Parse-prd: no textarea, "Generate Tasks", "Generate". `canSubmit` is mode-aware. Pure logic in `agent-wizard-logic.ts`. Data-testids: `agent-wizard`, `wizard-title`, `wizard-agent-select`, `wizard-model-select`, `wizard-variant-select`, `wizard-message-field`, `wizard-message-textarea`, `wizard-submit-button`.
+Dual-mode via `mode` prop (`'chat'`/`'parse-prd'`). Chat: textarea, "New Chat", "Start". Parse-prd: no textarea, "Generate Tasks", "Generate". `canSubmit` is mode-aware. Pure logic in `agent-wizard-logic.ts`. Data-testids: `agent-wizard`, `wizard-title`, `wizard-agent-select`, `wizard-model-select`, `wizard-variant-select`, `wizard-message-field`, `wizard-message-textarea`, `wizard-submit-button`. The agent dropdown also accepts "ollama" (routes through the local Ollama daemon to cloud models).
 
 ## ParsePrdProgress (`components/ParsePrdProgress.vue`)
 
