@@ -40,6 +40,16 @@ describe("OllamaDriver", () => {
         "Ollama agent requires a model",
       );
     });
+
+    it("rejects non-cloud models", async () => {
+      // No fetch mock needed — cloud guard runs before any HTTP call.
+      globalThis.fetch = vi.fn();
+      const driver = new OllamaDriver("llama3.2:3b");
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /supports only cloud models.*llama3\.2:3b/,
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
   });
 
   describe("listModels()", () => {
