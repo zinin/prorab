@@ -323,7 +323,7 @@ export interface IterationResult {
 
 export type Verbosity = "quiet" | "info" | "debug" | "trace";
 
-export const AgentTypeSchema = z.enum(["claude", "opencode", "ccs", "codex"]);
+export const AgentTypeSchema = z.enum(["claude", "opencode", "ccs", "codex", "ollama"]);
 export type AgentType = z.infer<typeof AgentTypeSchema>;
 
 /** Shared Zod schema for a single agent step (used by refine-prd, parse-prd, refine-tasks routes). */
