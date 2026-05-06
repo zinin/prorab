@@ -41,18 +41,38 @@ function resolveBaseUrl(): string {
 }
 
 /**
+ * Single source of truth for the context-window suffix shape — `[Nk]` / `[Nm]`,
+ * integer only, case-insensitive. Used by both `parseContextWindow` (extracts
+ * the numeric value) and `stripContextSuffix` (removes the suffix to get the
+ * daemon-facing id). Decimals (`[1.5m]`) and other units intentionally do not
+ * match.
+ */
+const CONTEXT_WINDOW_SUFFIX_RE = /\[(\d+)([km])\]/i;
+
+/**
  * Extract the context-window hint from a model id like
  * `deepseek-v4-pro:cloud[1m]` → 1_000_000, `foo:cloud[200k]` → 200_000.
  * Returns null if the model has no `[Nk]`/`[Nm]` suffix; the caller then
  * omits CLAUDE_CODE_AUTO_COMPACT_WINDOW and Claude Code uses its default.
- * Decimals (`[1.5m]`) and other units intentionally do not match.
  */
 function parseContextWindow(model: string): number | null {
-  const match = /\[(\d+)([km])\]/i.exec(model);
+  const match = CONTEXT_WINDOW_SUFFIX_RE.exec(model);
   if (!match) return null;
   const [, num, unit] = match;
   const multiplier = unit.toLowerCase() === "m" ? 1_000_000 : 1_000;
   return Number(num) * multiplier;
+}
+
+/**
+ * Strip a `[Nk]` / `[Nm]` context-window suffix from a model id, returning the
+ * bare daemon-facing id. The Ollama daemon (0.23.x) rejects the decorated
+ * form with HTTP 400 "invalid model name" — the suffix is a prorab-internal
+ * decoration, used only by `parseContextWindow` to pin
+ * `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Returns the input unchanged when the
+ * suffix is absent (or malformed, e.g. decimal `[1.5m]`).
+ */
+function stripContextSuffix(model: string): string {
+  return model.replace(CONTEXT_WINDOW_SUFFIX_RE, "");
 }
 
 /**
@@ -112,7 +132,10 @@ export class OllamaDriver implements AgentDriver {
 
   private async preflightModel(): Promise<void> {
     const baseUrl = resolveBaseUrl();
-    const url = `${baseUrl}/v1/models/${encodeURIComponent(this.model as string)}`;
+    // Probe with the bare daemon-facing id; the [Nm]/[Nk] suffix is a prorab-
+    // internal decoration that the daemon rejects with HTTP 400.
+    const probeId = stripContextSuffix(this.model as string);
+    const url = `${baseUrl}/v1/models/${encodeURIComponent(probeId)}`;
     let resp: Response;
     try {
       resp = await fetch(url, { signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS) });
@@ -141,6 +164,10 @@ export class OllamaDriver implements AgentDriver {
   private buildEnv(): Record<string, string> {
     const baseUrl = resolveBaseUrl();
     const model = this.model as string;
+    // The SDK forwards the *_MODEL env vars verbatim to the daemon; the daemon
+    // rejects the [Nm]/[Nk]-decorated id with HTTP 400. Strip for daemon-facing
+    // env, but keep the decorated `model` for parseContextWindow below.
+    const daemonModel = stripContextSuffix(model);
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
 
     // Drop undefineds left behind by the spread on optional keys.
@@ -156,10 +183,10 @@ export class OllamaDriver implements AgentDriver {
     env.ANTHROPIC_BASE_URL = baseUrl;
     env.ANTHROPIC_AUTH_TOKEN = "ollama";        // sentinel; takes precedence over ANTHROPIC_API_KEY
     env.ANTHROPIC_API_KEY = "";                 // belt-and-suspenders: ensure no host key sneaks back via SDK defaults
-    env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
-    env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
-    env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL = daemonModel;
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = daemonModel;
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = daemonModel;
+    env.CLAUDE_CODE_SUBAGENT_MODEL = daemonModel;
     env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";   // matches `ollama launch claude` Run(); suppresses "Created by Claude Code" attribution
     const ctx = parseContextWindow(model);
     if (ctx !== null) {
@@ -233,8 +260,12 @@ export class OllamaDriver implements AgentDriver {
 
     const checks = await Promise.all(
       OLLAMA_CLOUD_CATALOG.map(async (id) => {
+        // Probe with stripped (daemon-facing) form, but return the decorated
+        // catalog id so the UI / `parseContextWindow` see the [Nm]/[Nk] suffix
+        // when the user picks the model.
+        const probeId = stripContextSuffix(id);
         try {
-          const r = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(id)}`, {
+          const r = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(probeId)}`, {
             signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
           });
           return r.ok ? id : null;
