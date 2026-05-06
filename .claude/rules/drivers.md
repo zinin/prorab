@@ -53,7 +53,7 @@ Standalone driver using `@openai/codex-sdk`. SDK spawns Codex CLI as subprocess 
 Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after stripping `opts.variant` and merging a per-session env override that points the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides — host:port gets `http://` prepended, full URL kept verbatim with trailing slash stripped, unix-socket / whitespace forms rejected). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud[1m]` and `kimi-k2.6:cloud` without depending on a CCS proxy.
 
 **Setup**:
-- Reject non-cloud models (id must contain `:cloud`).
+- Reject non-cloud models (id must contain `:cloud` or `-cloud`).
 - Probe `/api/version` (daemon up?) within `OLLAMA_PREFLIGHT_TIMEOUT_MS` (default 5s).
 - Probe `GET /v1/models/<id>` for the requested model: 200 → accessible, 404 → "check ollama signin", 5xx/timeout/network → distinct "transient daemon" error (not auth misdiagnosis).
 - The bulk `GET /v1/models` is intentionally NOT used — on Ollama 0.23.1 it returns `{"data":null}` even for signed-in cloud profiles.
