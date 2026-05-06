@@ -74,6 +74,8 @@ Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after s
 
 **Variant**: `runSession()`/`startChat()` strip `opts.variant` before delegating. Cloud non-Claude models do not honor Claude's `effort` knob; persisted CLI/UI variants would otherwise leak through.
 
+**Daemon-facing strip**: The `[Nm]/[Nk]` suffix is prorab-internal decoration. `stripContextSuffix()` removes it before any daemon-facing operation — both the `/v1/models/<id>` probe AND the `ANTHROPIC_DEFAULT_*_MODEL` / `CLAUDE_CODE_SUBAGENT_MODEL` env vars sent to the SDK. The `CLAUDE_CODE_AUTO_COMPACT_WINDOW` parsing still sees the original decorated form. The daemon would otherwise reject decorated ids with HTTP 400 "invalid model name".
+
 **Auth**: relies entirely on the user's `ollama signin` (Ed25519 key in `~/.ollama/id_ed25519`). prorab never reads upstream tokens or signs requests itself; the daemon does.
 
 **Mid-session failures**: signout / daemon crash / cloud-revoke during a session surface as a `signal:error` from the SDK. `run.ts` stops the iteration; the task remains `in-progress` for resumption. We deliberately do not re-run preflight mid-session.

@@ -16,6 +16,10 @@ const PREFLIGHT_TIMEOUT_MS = Number(process.env.OLLAMA_PREFLIGHT_TIMEOUT_MS) || 
  * cloud catalog advertised by `ollama launch claude` upstream. Bump when new
  * cloud models ship; per-model probing in listModels() filters to whatever
  * the local daemon can actually serve, so false positives are auto-pruned.
+ * The `[Nm]/[Nk]` suffix is a prorab-internal decoration consumed by
+ * `parseContextWindow()` to set `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; the daemon
+ * never sees it because `stripContextSuffix()` removes it before any HTTP
+ * probe or model-id env var.
  */
 const OLLAMA_CLOUD_CATALOG: ReadonlyArray<string> = [
   "deepseek-v4-pro:cloud[1m]",
