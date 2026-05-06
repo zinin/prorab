@@ -246,13 +246,13 @@ describe("AgentWizard agent Select (shared)", () => {
     expect(templateSection).toMatch(/v-model\s*=\s*"agent"/);
   });
 
-  it("has agentOptions with exactly 4 entries", () => {
+  it("has agentOptions with exactly 5 entries", () => {
     const agentOptsMatch = scriptSection.match(
       /const\s+agentOptions\s*=\s*\[([\s\S]*?)\];/,
     );
     expect(agentOptsMatch).not.toBeNull();
     const entries = agentOptsMatch![1].match(/\{\s*label:/g);
-    expect(entries).toHaveLength(4);
+    expect(entries).toHaveLength(5);
   });
 
   it("includes claude option", () => {
@@ -261,6 +261,18 @@ describe("AgentWizard agent Select (shared)", () => {
 
   it("includes opencode option", () => {
     expect(scriptSection).toMatch(/value:\s*["']opencode["']/);
+  });
+
+  it("includes ccs option", () => {
+    expect(scriptSection).toMatch(/value:\s*["']ccs["']/);
+  });
+
+  it("includes codex option", () => {
+    expect(scriptSection).toMatch(/value:\s*["']codex["']/);
+  });
+
+  it("includes ollama option", () => {
+    expect(scriptSection).toMatch(/value:\s*["']ollama["']/);
   });
 });
 
