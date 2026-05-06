@@ -33,6 +33,18 @@ describe("OllamaDriver", () => {
     globalThis.fetch = originalFetch;
   });
 
+  function mockOllamaWith(modelId: string): void {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+      if (u.includes("/v1/models/")) {
+        const id = decodeURIComponent(u.replace(/.*\/v1\/models\//, ""));
+        return new Response(JSON.stringify({ id }), { status: id === modelId ? 200 : 404 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as unknown as typeof fetch;
+  }
+
   describe("setup()", () => {
     it("throws when model is missing", async () => {
       const driver = new OllamaDriver();
@@ -109,6 +121,90 @@ describe("OllamaDriver", () => {
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
         /failed to verify model/,
       );
+    });
+
+    it("builds session env with required Anthropic + Claude Code vars", async () => {
+      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      const calledOpts = innerInstance.runSession.mock.calls[0][0];
+
+      expect(calledOpts.env).toBeDefined();
+      expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:11434");
+      expect(calledOpts.env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+      expect(calledOpts.env.ANTHROPIC_API_KEY).toBe("");
+      expect(calledOpts.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("deepseek-v4-pro:cloud[1m]");
+      expect(calledOpts.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("deepseek-v4-pro:cloud[1m]");
+      expect(calledOpts.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("deepseek-v4-pro:cloud[1m]");
+      expect(calledOpts.env.CLAUDE_CODE_SUBAGENT_MODEL).toBe("deepseek-v4-pro:cloud[1m]");
+      expect(calledOpts.env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0");
+
+      await driver.teardown();
+    });
+
+    it("strips parent ANTHROPIC_*/CLAUDE_CODE_* leakage", async () => {
+      // Parent process has a real key set; it must NOT survive into the inner SDK env.
+      process.env.ANTHROPIC_API_KEY = "sk-ant-real-parent-key";
+      process.env.ANTHROPIC_RETRY = "9";
+      process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "999";
+
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      const env = innerInstance.runSession.mock.calls[0][0].env;
+
+      expect(env.ANTHROPIC_API_KEY).toBe("");                  // stripped + re-set to ""
+      expect(env.ANTHROPIC_RETRY).toBeUndefined();             // stripped, no override
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined(); // model has no [Nm]/[Nk] suffix → stripped, no re-set
+
+      await driver.teardown();
+    });
+
+    it("strips opts.variant before delegating to inner ClaudeDriver", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+        variant: "high",                                        // must NOT reach inner
+      } as any);
+      const calledOpts = innerInstance.runSession.mock.calls[0][0];
+      expect(calledOpts.variant).toBeUndefined();
+
+      await driver.teardown();
+    });
+
+    it("merges caller opts.env with sessionEnv (caller wins for unmanaged keys)", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+        env: { CUSTOM_USER_VAR: "value-from-caller", ANTHROPIC_AUTH_TOKEN: "should-be-overridden" } as Record<string, string>,
+      } as any);
+      const env = innerInstance.runSession.mock.calls[0][0].env;
+      expect(env.CUSTOM_USER_VAR).toBe("value-from-caller");          // caller key preserved
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");                 // our override wins
+
+      await driver.teardown();
     });
   });
 

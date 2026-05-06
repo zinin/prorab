@@ -57,7 +57,7 @@ export class OllamaDriver implements AgentDriver {
     private useUserSettings: boolean = false,
   ) {}
 
-  async setup(_opts: SetupOptions): Promise<void> {
+  async setup(opts: SetupOptions): Promise<void> {
     if (!this.model) {
       throw new Error("Ollama agent requires a model");
     }
@@ -68,7 +68,12 @@ export class OllamaDriver implements AgentDriver {
     }
     await this.preflightDaemon();
     await this.preflightModel();
-    throw new Error("Not implemented yet");
+    this.inner = new ClaudeDriver(this.model, this.useUserSettings);
+    this.sessionEnv = this.buildEnv();
+    const innerAsDriver = this.inner as AgentDriver;
+    if (innerAsDriver.setup) {
+      await innerAsDriver.setup(opts);
+    }
   }
 
   private async preflightDaemon(): Promise<void> {
@@ -118,13 +123,55 @@ export class OllamaDriver implements AgentDriver {
     }
   }
 
+  private buildEnv(): Record<string, string> {
+    const baseUrl = resolveBaseUrl();
+    const model = this.model as string;
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+
+    // Drop undefineds left behind by the spread on optional keys.
+    for (const k of Object.keys(env)) {
+      if (env[k] === undefined) delete env[k];
+    }
+    // Strip any ANTHROPIC_*/CLAUDE_CODE_* leaked from the parent process so a
+    // stale ANTHROPIC_API_KEY (real Anthropic key) cannot reach the inner SDK.
+    for (const k of Object.keys(env)) {
+      if (k.startsWith("ANTHROPIC_") || k.startsWith("CLAUDE_CODE_")) delete env[k];
+    }
+
+    env.ANTHROPIC_BASE_URL = baseUrl;
+    env.ANTHROPIC_AUTH_TOKEN = "ollama";        // sentinel; takes precedence over ANTHROPIC_API_KEY
+    env.ANTHROPIC_API_KEY = "";                 // belt-and-suspenders: ensure no host key sneaks back via SDK defaults
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+    env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+    env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";   // matches `ollama launch claude` Run(); suppresses "Created by Claude Code" attribution
+    return env;
+  }
+
   async teardown(): Promise<void> {
+    const innerAsDriver = this.inner as AgentDriver | null;
+    if (innerAsDriver?.teardown) {
+      await innerAsDriver.teardown();
+    }
     this.inner = null;
     this.sessionEnv = undefined;
   }
 
-  runSession(_opts: SessionOptions): Promise<IterationResult> {
-    throw new Error("Not implemented yet");
+  runSession(opts: SessionOptions): Promise<IterationResult> {
+    const driver = this.requireDriver();
+    const { variant: _variant, env: callerEnv, ...rest } = opts as SessionOptions & { variant?: unknown };
+    const mergedEnv = this.sessionEnv
+      ? { ...(callerEnv ?? {}), ...this.sessionEnv }
+      : callerEnv;
+    return driver.runSession({ ...rest, env: mergedEnv } as SessionOptions);
+  }
+
+  private requireDriver(): ClaudeDriver {
+    if (!this.inner) {
+      throw new Error("Ollama driver not initialized. Call setup() first.");
+    }
+    return this.inner;
   }
 
   startChat(_opts: ChatOptions): AsyncIterable<ChatEvent> {
