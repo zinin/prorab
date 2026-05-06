@@ -245,6 +245,79 @@ describe("OllamaDriver", () => {
       const driver = new OllamaDriver("kimi-k2.6:cloud");
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(/Unix-socket/);
     });
+
+    it("sets CLAUDE_CODE_AUTO_COMPACT_WINDOW from [1m] suffix", async () => {
+      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      const calledOpts = innerInstance.runSession.mock.calls[0][0];
+      expect(calledOpts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
+
+      await driver.teardown();
+    });
+
+    it("sets CLAUDE_CODE_AUTO_COMPACT_WINDOW from [200k] suffix", async () => {
+      mockOllamaWith("foo-model:cloud[200k]");
+      const driver = new OllamaDriver("foo-model:cloud[200k]");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      const calledOpts = innerInstance.runSession.mock.calls[0][0];
+      expect(calledOpts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("200000");
+
+      await driver.teardown();
+    });
+
+    it("omits CLAUDE_CODE_AUTO_COMPACT_WINDOW when no [Nk]/[Nm] suffix", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      const calledOpts = innerInstance.runSession.mock.calls[0][0];
+      expect(calledOpts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+
+      await driver.teardown();
+    });
+
+    it("ignores decimal suffix [1.5m] (regex matches integers only)", async () => {
+      // Custom mock: probe must match the exact id including the suffix.
+      globalThis.fetch = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+        if (u.includes("/v1/models/")) {
+          const id = decodeURIComponent(u.replace(/.*\/v1\/models\//, ""));
+          return new Response(JSON.stringify({ id }), { status: id === "weird-model:cloud[1.5m]" ? 200 : 404 });
+        }
+        return new Response("", { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const driver = new OllamaDriver("weird-model:cloud[1.5m]");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+      });
+      expect(innerInstance.runSession.mock.calls[0][0].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+
+      await driver.teardown();
+    });
   });
 
   describe("listModels()", () => {

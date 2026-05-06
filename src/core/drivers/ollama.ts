@@ -41,6 +41,21 @@ function resolveBaseUrl(): string {
 }
 
 /**
+ * Extract the context-window hint from a model id like
+ * `deepseek-v4-pro:cloud[1m]` → 1_000_000, `foo:cloud[200k]` → 200_000.
+ * Returns null if the model has no `[Nk]`/`[Nm]` suffix; the caller then
+ * omits CLAUDE_CODE_AUTO_COMPACT_WINDOW and Claude Code uses its default.
+ * Decimals (`[1.5m]`) and other units intentionally do not match.
+ */
+function parseContextWindow(model: string): number | null {
+  const match = /\[(\d+)([km])\]/i.exec(model);
+  if (!match) return null;
+  const [, num, unit] = match;
+  const multiplier = unit.toLowerCase() === "m" ? 1_000_000 : 1_000;
+  return Number(num) * multiplier;
+}
+
+/**
  * OllamaDriver wraps ClaudeDriver via composition (same strategy as CcsDriver).
  *
  * It points the Claude Agent SDK at the local Ollama daemon
@@ -146,6 +161,10 @@ export class OllamaDriver implements AgentDriver {
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
     env.CLAUDE_CODE_SUBAGENT_MODEL = model;
     env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";   // matches `ollama launch claude` Run(); suppresses "Created by Claude Code" attribution
+    const ctx = parseContextWindow(model);
+    if (ctx !== null) {
+      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(ctx);
+    }
     return env;
   }
 
