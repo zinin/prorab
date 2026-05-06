@@ -370,6 +370,34 @@ describe("OllamaDriver", () => {
     });
   });
 
+  describe("chat delegation", () => {
+    it("sendMessage / replyQuestion / abortChat delegate to inner driver", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+
+      driver.sendMessage("hello");
+      expect(innerInstance.sendMessage).toHaveBeenCalledWith("hello");
+
+      driver.replyQuestion("q-1", { answer: "yes" });
+      expect(innerInstance.replyQuestion).toHaveBeenCalledWith("q-1", { answer: "yes" });
+
+      driver.abortChat();
+      expect(innerInstance.abortChat).toHaveBeenCalledTimes(1);
+
+      await driver.teardown();
+    });
+
+    it("delegation methods throw when setup() has not been called", () => {
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      expect(() => driver.sendMessage("hi")).toThrow(/not initialized/);
+      expect(() => driver.replyQuestion("q", {})).toThrow(/not initialized/);
+      expect(() => driver.abortChat()).toThrow(/not initialized/);
+    });
+  });
+
   describe("listModels()", () => {
     it("returns [] when daemon /api/version rejects", async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));

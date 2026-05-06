@@ -202,16 +202,16 @@ export class OllamaDriver implements AgentDriver {
     return driver.startChat({ ...rest, env: mergedEnv } as ChatOptions);
   }
 
-  sendMessage(_text: string): void {
-    throw new Error("Not implemented yet");
+  sendMessage(text: string): void {
+    this.requireDriver().sendMessage(text);
   }
 
-  replyQuestion(_questionId: string, _answers: QuestionAnswers): void {
-    throw new Error("Not implemented yet");
+  replyQuestion(questionId: string, answers: QuestionAnswers): void {
+    this.requireDriver().replyQuestion(questionId, answers);
   }
 
   abortChat(): void {
-    throw new Error("Not implemented yet");
+    this.requireDriver().abortChat();
   }
 
   async listModels(): Promise<ModelEntry[]> {
