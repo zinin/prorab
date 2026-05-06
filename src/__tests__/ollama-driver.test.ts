@@ -320,6 +320,56 @@ describe("OllamaDriver", () => {
     });
   });
 
+  describe("startChat()", () => {
+    it("forwards sessionEnv to the inner ClaudeDriver", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      driver.startChat({ cwd: "/tmp", verbosity: "info" });
+
+      expect(innerInstance.startChat).toHaveBeenCalledTimes(1);
+      const calledOpts = innerInstance.startChat.mock.calls[0][0];
+      expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:11434");
+      expect(calledOpts.env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+
+      await driver.teardown();
+    });
+
+    it("strips opts.variant before delegating", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      driver.startChat({ cwd: "/tmp", verbosity: "info", variant: "high" } as any);
+
+      expect(innerInstance.startChat.mock.calls[0][0].variant).toBeUndefined();
+
+      await driver.teardown();
+    });
+
+    it("merges caller opts.env (caller wins for unmanaged keys)", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      driver.startChat({
+        cwd: "/tmp",
+        verbosity: "info",
+        env: { CUSTOM_USER_VAR: "x", ANTHROPIC_AUTH_TOKEN: "should-be-overridden" } as Record<string, string>,
+      } as any);
+
+      const env = innerInstance.startChat.mock.calls[0][0].env;
+      expect(env.CUSTOM_USER_VAR).toBe("x");
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+
+      await driver.teardown();
+    });
+  });
+
   describe("listModels()", () => {
     it("returns [] when daemon /api/version rejects", async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));

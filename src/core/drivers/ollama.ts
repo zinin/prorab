@@ -193,8 +193,13 @@ export class OllamaDriver implements AgentDriver {
     return this.inner;
   }
 
-  startChat(_opts: ChatOptions): AsyncIterable<ChatEvent> {
-    throw new Error("Not implemented yet");
+  startChat(opts: ChatOptions): AsyncIterable<ChatEvent> {
+    const driver = this.requireDriver();
+    const { variant: _variant, env: callerEnv, ...rest } = opts as ChatOptions & { variant?: unknown };
+    const mergedEnv = this.sessionEnv
+      ? { ...(callerEnv ?? {}), ...this.sessionEnv }
+      : callerEnv;
+    return driver.startChat({ ...rest, env: mergedEnv } as ChatOptions);
   }
 
   sendMessage(_text: string): void {
