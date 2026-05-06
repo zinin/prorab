@@ -6,7 +6,7 @@ paths: "src/core/drivers/**/*.ts"
 
 ## AgentDriver Interface
 
-Strategy pattern with `ClaudeDriver` and `OpenCodeDriver`. Defines both batch (`runSession`) and interactive chat methods (`startChat`, `sendMessage`, `replyQuestion`, `abortChat`). Selected via `--agent claude|opencode`. Optional `--model` and `--variant` flags. OpenCode requires local server (`opencode serve`) started per iteration via setup/teardown. Context window limits in `context-window.ts`.
+Strategy pattern with `ClaudeDriver`, `OpenCodeDriver`, `CcsDriver`, `CodexDriver`, and `OllamaDriver`. Defines both batch (`runSession`) and interactive chat methods (`startChat`, `sendMessage`, `replyQuestion`, `abortChat`). Selected via `--agent claude|opencode|ccs|codex|ollama`. Optional `--model` and `--variant` flags. OpenCode requires local server (`opencode serve`) started per iteration via setup/teardown. Context window limits in `context-window.ts`.
 
 ## Interactive Chat Types
 
@@ -50,7 +50,7 @@ Standalone driver using `@openai/codex-sdk`. SDK spawns Codex CLI as subprocess 
 
 ## OllamaDriver
 
-Standalone driver wrapping `ClaudeDriver` via composition (same pattern as `CcsDriver`). Routes the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides — host:port gets `http://` prepended, full URL kept verbatim with trailing slash stripped, unix-socket / whitespace forms rejected). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud[1m]` and `kimi-k2.6:cloud` without depending on a CCS proxy.
+Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after stripping `opts.variant` and merging a per-session env override that points the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides — host:port gets `http://` prepended, full URL kept verbatim with trailing slash stripped, unix-socket / whitespace forms rejected). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud[1m]` and `kimi-k2.6:cloud` without depending on a CCS proxy.
 
 **Setup**:
 - Reject non-cloud models (id must contain `:cloud`).
