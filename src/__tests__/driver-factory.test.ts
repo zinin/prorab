@@ -3,6 +3,7 @@ import { createDriver } from "../core/drivers/factory.js";
 import { CcsDriver } from "../core/drivers/ccs.js";
 import { ClaudeDriver } from "../core/drivers/claude.js";
 import { CodexDriver } from "../core/drivers/codex.js";
+import { OllamaDriver } from "../core/drivers/ollama.js";
 import { OpenCodeDriver } from "../core/drivers/opencode.js";
 
 describe("createDriver", () => {
@@ -24,6 +25,11 @@ describe("createDriver", () => {
   it("creates CodexDriver for 'codex'", () => {
     const driver = createDriver("codex");
     expect(driver).toBeInstanceOf(CodexDriver);
+  });
+
+  it("creates OllamaDriver for 'ollama'", () => {
+    const driver = createDriver("ollama", "kimi-k2.6:cloud");
+    expect(driver).toBeInstanceOf(OllamaDriver);
   });
 
   it("throws for unknown agent type", () => {

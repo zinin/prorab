@@ -9,7 +9,21 @@ import type {
 } from "./types.js";
 import { ClaudeDriver } from "./claude.js";
 
-const PREFLIGHT_TIMEOUT_MS = Number(process.env.OLLAMA_PREFLIGHT_TIMEOUT_MS) || 5000;
+/**
+ * Read the preflight timeout from `OLLAMA_PREFLIGHT_TIMEOUT_MS` and validate
+ * shape — `AbortSignal.timeout()` throws `RangeError` for negative or
+ * non-integer delays, which would otherwise surface as a stack trace at
+ * module load time. Falls back to the 5000 ms default when the env var is
+ * unset, empty, NaN, non-positive, or non-integer.
+ */
+function resolvePreflightTimeout(): number {
+  const raw = process.env.OLLAMA_PREFLIGHT_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return 5000;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return 5000;
+  return n;
+}
+const PREFLIGHT_TIMEOUT_MS = resolvePreflightTimeout();
 
 /**
  * Hardcoded list of cloud model ids prorab knows how to surface. Mirrors the
@@ -46,12 +60,14 @@ function resolveBaseUrl(): string {
 
 /**
  * Single source of truth for the context-window suffix shape — `[Nk]` / `[Nm]`,
- * integer only, case-insensitive. Used by both `parseContextWindow` (extracts
- * the numeric value) and `stripContextSuffix` (removes the suffix to get the
- * daemon-facing id). Decimals (`[1.5m]`) and other units intentionally do not
- * match.
+ * integer only, case-insensitive, anchored at end-of-string so a `[Nm]`
+ * fragment buried mid-id (a hypothetical `foo:cloud[1m]-beta`) is left intact
+ * instead of producing a half-stripped daemon id like `foo:cloud-beta`. Used by
+ * both `parseContextWindow` (extracts the numeric value) and
+ * `stripContextSuffix` (removes the suffix to get the daemon-facing id).
+ * Decimals (`[1.5m]`) and other units intentionally do not match.
  */
-const CONTEXT_WINDOW_SUFFIX_RE = /\[(\d+)([km])\]/i;
+const CONTEXT_WINDOW_SUFFIX_RE = /\[(\d+)([km])\]$/i;
 
 /**
  * Extract the context-window hint from a model id like
@@ -97,6 +113,11 @@ export class OllamaDriver implements AgentDriver {
   ) {}
 
   async setup(opts: SetupOptions): Promise<void> {
+    if (this.inner) {
+      throw new Error(
+        "Ollama driver already initialized. Call teardown() before setup() again.",
+      );
+    }
     if (!this.model) {
       throw new Error("Ollama agent requires a model");
     }
@@ -105,18 +126,26 @@ export class OllamaDriver implements AgentDriver {
         `Ollama agent supports only cloud models (id must contain ':cloud' or '-cloud'); got '${this.model}'.`,
       );
     }
-    await this.preflightDaemon();
-    await this.preflightModel();
-    this.inner = new ClaudeDriver(this.model, this.useUserSettings);
-    this.sessionEnv = this.buildEnv();
+    // Resolve once and thread through; calling resolveBaseUrl() in each helper
+    // would re-parse OLLAMA_HOST and could disagree if the env mutates between
+    // calls (theoretical, but cheap to remove).
+    const baseUrl = resolveBaseUrl();
+    await this.preflightDaemon(baseUrl);
+    await this.preflightModel(baseUrl);
+    // Pass the stripped (daemon-facing) id to the inner ClaudeDriver — the
+    // SDK forwards `queryOptions.model` to `/v1/messages` verbatim, and the
+    // daemon rejects the [Nm]/[Nk]-decorated form with HTTP 400. The
+    // decorated `this.model` is still consulted by `parseContextWindow` in
+    // `buildEnv()` to pin `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
+    this.inner = new ClaudeDriver(stripContextSuffix(this.model as string), this.useUserSettings);
+    this.sessionEnv = this.buildEnv(baseUrl);
     const innerAsDriver = this.inner as AgentDriver;
     if (innerAsDriver.setup) {
       await innerAsDriver.setup(opts);
     }
   }
 
-  private async preflightDaemon(): Promise<void> {
-    const baseUrl = resolveBaseUrl();
+  private async preflightDaemon(baseUrl: string): Promise<void> {
     let resp: Response;
     try {
       resp = await fetch(`${baseUrl}/api/version`, {
@@ -134,8 +163,7 @@ export class OllamaDriver implements AgentDriver {
     }
   }
 
-  private async preflightModel(): Promise<void> {
-    const baseUrl = resolveBaseUrl();
+  private async preflightModel(baseUrl: string): Promise<void> {
     // Probe with the bare daemon-facing id; the [Nm]/[Nk] suffix is a prorab-
     // internal decoration that the daemon rejects with HTTP 400.
     const probeId = stripContextSuffix(this.model as string);
@@ -150,7 +178,11 @@ export class OllamaDriver implements AgentDriver {
           `The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
       );
     }
-    if (resp.status === 404) {
+    // 401/403 indicate auth-side failure (cloud profile not signed in or
+    // token revoked), same actionable message as 404 (run `ollama signin`).
+    // Without this, a revoked/expired profile would surface as the misleading
+    // "transient daemon issue" branch below.
+    if (resp.status === 404 || resp.status === 401 || resp.status === 403) {
       const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
       throw new Error(
         `Model '${this.model}' is not available via ollama. ` +
@@ -165,8 +197,7 @@ export class OllamaDriver implements AgentDriver {
     }
   }
 
-  private buildEnv(): Record<string, string> {
-    const baseUrl = resolveBaseUrl();
+  private buildEnv(baseUrl: string): Record<string, string> {
     const model = this.model as string;
     // The SDK forwards the *_MODEL env vars verbatim to the daemon; the daemon
     // rejects the [Nm]/[Nk]-decorated id with HTTP 400. Strip for daemon-facing
@@ -210,11 +241,13 @@ export class OllamaDriver implements AgentDriver {
 
   runSession(opts: SessionOptions): Promise<IterationResult> {
     const driver = this.requireDriver();
-    const { variant: _variant, env: callerEnv, ...rest } = opts as SessionOptions & { variant?: unknown };
+    const { variant: _variant, env: callerEnv, ...rest } = opts;
+    // Caller-supplied env survives for unmanaged keys (PATH/HOME/proxies);
+    // sessionEnv wins for the ANTHROPIC_*/CLAUDE_CODE_* keys we manage.
     const mergedEnv = this.sessionEnv
       ? { ...(callerEnv ?? {}), ...this.sessionEnv }
       : callerEnv;
-    return driver.runSession({ ...rest, env: mergedEnv } as SessionOptions);
+    return driver.runSession({ ...rest, env: mergedEnv });
   }
 
   private requireDriver(): ClaudeDriver {
@@ -226,11 +259,13 @@ export class OllamaDriver implements AgentDriver {
 
   startChat(opts: ChatOptions): AsyncIterable<ChatEvent> {
     const driver = this.requireDriver();
-    const { variant: _variant, env: callerEnv, ...rest } = opts as ChatOptions & { variant?: unknown };
+    const { variant: _variant, env: callerEnv, ...rest } = opts;
+    // Caller-supplied env survives for unmanaged keys (PATH/HOME/proxies);
+    // sessionEnv wins for the ANTHROPIC_*/CLAUDE_CODE_* keys we manage.
     const mergedEnv = this.sessionEnv
       ? { ...(callerEnv ?? {}), ...this.sessionEnv }
       : callerEnv;
-    return driver.startChat({ ...rest, env: mergedEnv } as ChatOptions);
+    return driver.startChat({ ...rest, env: mergedEnv });
   }
 
   sendMessage(text: string): void {

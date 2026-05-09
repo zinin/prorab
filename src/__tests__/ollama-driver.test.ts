@@ -112,6 +112,36 @@ describe("OllamaDriver", () => {
       );
     });
 
+    it.each([401, 403])(
+      "throws 'not available / signin' when /v1/models/<id> returns %i (auth-side)",
+      async (status) => {
+        globalThis.fetch = vi.fn(async (url: string) => {
+          const u = String(url);
+          if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+          if (u.includes("/v1/models/")) return new Response("auth", { status });
+          return new Response("nope", { status: 404 });
+        }) as unknown as typeof fetch;
+
+        const driver = new OllamaDriver("kimi-k2.6:cloud");
+        await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+          /Model 'kimi-k2.6:cloud' is not available.*ollama signin/,
+        );
+      },
+    );
+
+    it("throws when setup() called twice without teardown() between", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+      await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+        /already initialized.*teardown/,
+      );
+      await driver.teardown();
+      // After teardown, setup() works again.
+      await expect(driver.setup({ verbosity: "info" })).resolves.toBeUndefined();
+      await driver.teardown();
+    });
+
     it("throws 'transient daemon issue' when /v1/models/<id> returns 5xx", async () => {
       globalThis.fetch = vi.fn(async (url: string) => {
         const u = String(url);
@@ -305,6 +335,24 @@ describe("OllamaDriver", () => {
       const decoded = decodeURIComponent(probeCall!.replace(/.*\/v1\/models\//, ""));
       expect(decoded).toBe("deepseek-v4-pro:cloud");      // suffix stripped
       expect(decoded).not.toMatch(/\[/);                   // no leftover brackets
+
+      await driver.teardown();
+    });
+
+    it("passes the stripped (daemon-facing) id to the inner ClaudeDriver constructor", async () => {
+      // Regression for the SDK-constructor leak: even with stripped env vars,
+      // ClaudeDriver forwards its constructor `model` to `queryOptions.model`,
+      // which the SDK passes verbatim to /v1/messages. The daemon rejects the
+      // decorated `[1m]` form with HTTP 400, so the inner driver must receive
+      // the stripped id. The decorated form is still kept on `this.model` for
+      // `parseContextWindow()` → `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
+      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      await driver.setup({ verbosity: "info" });
+
+      const ctorArgs = vi.mocked(ClaudeDriver).mock.calls[0];
+      expect(ctorArgs[0]).toBe("deepseek-v4-pro:cloud");
+      expect(ctorArgs[0] as string).not.toMatch(/\[/);
 
       await driver.teardown();
     });

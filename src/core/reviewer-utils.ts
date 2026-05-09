@@ -51,13 +51,22 @@ export function parseReviewerSpec(spec: string): Reviewer {
   let model: string;
   let variant: string | undefined;
 
-  // Split on last colon: model may contain colons, variant never does
-  const lastColon = rest.lastIndexOf(":");
-  if (lastColon === -1) {
+  if (agent === "ollama") {
+    // Ollama cloud model ids embed `:cloud` / `:cloud[Nm]`, so a last-colon
+    // split would mis-parse `ollama:deepseek-v4-pro:cloud[1m]` as
+    // model=`deepseek-v4-pro`, variant=`cloud[1m]` — and setup() would then
+    // reject the truncated id as non-cloud. The driver strips any variant
+    // anyway, so treating the entire remainder as the model is correct.
     model = rest;
   } else {
-    model = rest.slice(0, lastColon);
-    variant = rest.slice(lastColon + 1);
+    // Split on last colon: model may contain colons, variant never does
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon === -1) {
+      model = rest;
+    } else {
+      model = rest.slice(0, lastColon);
+      variant = rest.slice(lastColon + 1);
+    }
   }
 
   const result = ReviewerSchema.safeParse({ agent, model, variant });

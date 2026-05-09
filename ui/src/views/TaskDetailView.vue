@@ -581,7 +581,7 @@ watch(() => expandStore.outcome, (outcome) => {
           />
         </div>
 
-        <label v-if="expandAgent === 'claude' || expandAgent === 'ccs'" class="expand-dialog__checkbox">
+        <label v-if="expandAgent === 'claude' || expandAgent === 'ccs' || expandAgent === 'ollama'" class="expand-dialog__checkbox">
           <Checkbox v-model="expandNoUserSettings" :binary="true" />
           No user settings
         </label>

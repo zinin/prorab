@@ -486,7 +486,7 @@ async function toggleGracefulStop() {
             <Select v-model="verbosity" :options="verbosityOptions" optionLabel="label" optionValue="value" :disabled="isRunning" />
           </div>
           <label class="checkbox-field"><Checkbox v-model="allowDirty" :binary="true" :disabled="isRunning" /> Allow dirty</label>
-          <label v-if="agent === 'claude' || agent === 'ccs'" class="checkbox-field"><Checkbox v-model="userSettings" :binary="true" :trueValue="false" :falseValue="true" :disabled="isRunning" /> No user settings</label>
+          <label v-if="agent === 'claude' || agent === 'ccs' || agent === 'ollama'" class="checkbox-field"><Checkbox v-model="userSettings" :binary="true" :trueValue="false" :falseValue="true" :disabled="isRunning" /> No user settings</label>
           <label v-if="agent === 'ccs'" class="checkbox-field"><Checkbox v-model="applyHooks" :binary="true" :disabled="isRunning" /> Apply hooks</label>
           <label class="checkbox-field"><Checkbox v-model="reviewEnabled" :binary="true" :disabled="isRunning" /> Review enabled</label>
           <div v-if="reviewEnabled" class="review-rounds-inline">
