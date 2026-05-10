@@ -127,6 +127,32 @@ The cloud-only guard `model.includes(":cloud")` rejected 2 catalog entries that 
 
 ---
 
+## External Code Review Iterations
+
+Both rounds were `/external-code-review default` — multi-reviewer fan-out (Claude / Codex / Gemini + N CCS profiles + N Ollama profiles), Справедливо findings auto-applied, Спорно findings discussed with the user, dismissed iter-1 issues are not re-litigated when they reappear in later rounds.
+
+### Iter-1 — commit `6ff6a7f`
+
+8 reviewers ran (`ccs-albb-minimax` failed in recursive-orchestration mode and produced no findings). Applied: 1 Critical (model-id decoration leak in inner ClaudeDriver constructor) + 4 Important Справедливо (B/G/H/C — preflight-timeout validator, "No user settings" v-if extended to ollama, parseReviewerSpec last-colon bug for ollama, CONTEXT_WINDOW_SUFFIX_RE end-anchored) + 4 Important Спорно (E/F/J/CC — single resolveBaseUrl threading, setup() re-entry guard, 401/403 mapped to "ollama signin", symmetric env-merge precedence comment) + 3 Minor Справедливо (L/Q — drop `as ... & {variant?}` cast, add OllamaDriver case in driver-factory test). +5 tests.
+
+### Iter-2 — commit `114f64e`
+
+11 reviewers ran (Claude / Codex / Gemini + 5 CCS profiles + 3 Ollama profiles), all returned findings. 5 reviewers gave a clean "ready to merge"; the rest reported only Important / Minor. Applied:
+
+- **B (codex, ollama-minimax) — Important:** preflightModel maps HTTP 400/422 to a distinct "invalid model id" message instead of the misleading "transient daemon" branch.
+- **G (ccs-albb-qwen, ccs-albb-kimi) — Important:** dropped the dead-code "delete undefined values" loop in buildEnv (process.env values are always strings on Node 20+).
+- **A+F (codex, ollama-minimax) — Important Спорно (user-approved):** `runSession`/`startChat` now strip `ANTHROPIC_*`/`CLAUDE_CODE_*` from caller-supplied `opts.env` via `stripManagedNamespaces()` — symmetric with the strip applied to `process.env` in `buildEnv`. Closes the asymmetry where parent-process leakage was guarded but caller-supplied env could reintroduce managed keys.
+- **K (ccs-albb-glm, ollama-minimax) — Minor:** replace `this.model as string` casts with `const model = this.model` after the null-guard, threaded as a parameter to `preflightModel` and `buildEnv`.
+- **N (gemini) — Minor:** drop redundant `: boolean` annotation on `useUserSettings = false`.
+
++2 tests (regression coverage for caller-env strip in both `runSession` and `startChat`). drivers.md updated to document 401/403 + 400/422 ladder and symmetric caller-env strip.
+
+**Skipped (user-approved Спорно decision):** H — UI v-if duplication of `agent === 'claude' || 'ccs' || 'ollama'` across 4 files. Drift catch'ится тестами; user opted to leave the inline check.
+
+**Skipped (already-dismissed iter-1):** C (PREFLIGHT_TIMEOUT_MS module-load), D (preflightDaemon catch generic message), I (cloud-guard substring), M (IPv6 OLLAMA_HOST), O (catalog drift), Q (runSession/startChat duplication). Future iter-3 would likely re-find these; do NOT silently re-apply.
+
+---
+
 ## Pre-PR Cleanup (REMAINING)
 
 Per `/home/zinin/.claude/CLAUDE.md`, design and plan documents under `docs/superpowers/` must NOT appear in the PR diff. Before opening the PR, remove **all** ollama-driver artifacts under `docs/superpowers/`:
@@ -166,9 +192,9 @@ The documents stay accessible via the branch's git history if needed later.
 
 ---
 
-## Test Suite Status
+## Test Suite Status (after iter-2 fix commit `114f64e`)
 
-- Ollama-driver tests: 38 passing (`npx vitest run src/__tests__/ollama-driver.test.ts`)
-- Full prorab suite: 3891 passing (142 files)
+- Ollama-driver tests: 46 passing (`npx vitest run src/__tests__/ollama-driver.test.ts`)
+- Full prorab suite: 3901 passing (142 files)
 - TypeScript type check: clean (`npx tsc --noEmit`)
 - Vite UI build: clean (`npm run build:ui`)
