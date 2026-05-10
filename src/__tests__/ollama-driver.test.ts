@@ -129,6 +129,23 @@ describe("OllamaDriver", () => {
       },
     );
 
+    it.each([400, 422])(
+      "throws 'invalid format' when /v1/models/<id> returns %i (malformed id)",
+      async (status) => {
+        globalThis.fetch = vi.fn(async (url: string) => {
+          const u = String(url);
+          if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
+          if (u.includes("/v1/models/")) return new Response("invalid model name", { status });
+          return new Response("nope", { status: 404 });
+        }) as unknown as typeof fetch;
+
+        const driver = new OllamaDriver("kimi-k2.6:cloud");
+        await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
+          /rejected model id 'kimi-k2.6:cloud'.*invalid format/,
+        );
+      },
+    );
+
     it("throws when setup() called twice without teardown() between", async () => {
       mockOllamaWith("kimi-k2.6:cloud");
       const driver = new OllamaDriver("kimi-k2.6:cloud");
@@ -252,6 +269,33 @@ describe("OllamaDriver", () => {
       const env = innerInstance.runSession.mock.calls[0][0].env;
       expect(env.CUSTOM_USER_VAR).toBe("value-from-caller");          // caller key preserved
       expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");                 // our override wins
+
+      await driver.teardown();
+    });
+
+    it("strips caller ANTHROPIC_*/CLAUDE_CODE_* keys (mirrors parent-process strip)", async () => {
+      // Model without [Nm]/[Nk] suffix → CLAUDE_CODE_AUTO_COMPACT_WINDOW is NOT
+      // in sessionEnv. Without the caller-side strip, a caller-supplied value
+      // would survive the merge and reach the inner SDK. ANTHROPIC_RETRY is
+      // never in sessionEnv (not one of our 7 managed overrides).
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      await driver.runSession({
+        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
+        maxTurns: 1, verbosity: "info", unitId: "u1",
+        env: {
+          CUSTOM_USER_VAR: "kept",
+          ANTHROPIC_RETRY: "should-be-stripped",
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "999999",
+        } as Record<string, string>,
+      } as any);
+      const env = innerInstance.runSession.mock.calls[0][0].env;
+      expect(env.CUSTOM_USER_VAR).toBe("kept");
+      expect(env.ANTHROPIC_RETRY).toBeUndefined();
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
 
       await driver.teardown();
     });
@@ -491,6 +535,30 @@ describe("OllamaDriver", () => {
       const env = innerInstance.startChat.mock.calls[0][0].env;
       expect(env.CUSTOM_USER_VAR).toBe("x");
       expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+
+      await driver.teardown();
+    });
+
+    it("strips caller ANTHROPIC_*/CLAUDE_CODE_* keys (mirrors parent-process strip)", async () => {
+      mockOllamaWith("kimi-k2.6:cloud");
+      const driver = new OllamaDriver("kimi-k2.6:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
+      driver.startChat({
+        cwd: "/tmp",
+        verbosity: "info",
+        env: {
+          CUSTOM_USER_VAR: "kept",
+          ANTHROPIC_RETRY: "should-be-stripped",
+          CLAUDE_CODE_AUTO_COMPACT_WINDOW: "999999",
+        } as Record<string, string>,
+      } as any);
+
+      const env = innerInstance.startChat.mock.calls[0][0].env;
+      expect(env.CUSTOM_USER_VAR).toBe("kept");
+      expect(env.ANTHROPIC_RETRY).toBeUndefined();
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
 
       await driver.teardown();
     });

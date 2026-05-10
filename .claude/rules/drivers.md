@@ -55,7 +55,7 @@ Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after s
 **Setup**:
 - Reject non-cloud models (id must contain `:cloud` or `-cloud`).
 - Probe `/api/version` (daemon up?) within `OLLAMA_PREFLIGHT_TIMEOUT_MS` (default 5s).
-- Probe `GET /v1/models/<id>` for the requested model: 200 → accessible, 404 → "check ollama signin", 5xx/timeout/network → distinct "transient daemon" error (not auth misdiagnosis).
+- Probe `GET /v1/models/<id>` for the requested model: 200 → accessible, 401/403/404 → "check ollama signin", 400/422 → "invalid model id (malformed format)", 5xx/timeout/network → distinct "transient daemon" error (not auth misdiagnosis).
 - The bulk `GET /v1/models` is intentionally NOT used — on Ollama 0.23.1 it returns `{"data":null}` even for signed-in cloud profiles.
 
 **Catalog**: `listModels()` returns the intersection of a hardcoded `OLLAMA_CLOUD_CATALOG` (mirroring `cmd/launch/claude.go` upstream) and the per-model 200-OK probes. No `variants` field — UI hides the effort dropdown.
@@ -70,7 +70,7 @@ Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after s
 - `CLAUDE_CODE_ATTRIBUTION_HEADER=0`
 - `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = parsed from `[Nm]/[Nk]` suffix in the model id; omitted when no suffix. **Intentional divergence** from upstream's `lookupCloudModelLimit()`: simpler and avoids drift in a hardcoded model→context map.
 
-**Env hygiene**: before applying overrides, all `ANTHROPIC_*`/`CLAUDE_CODE_*` keys leaking from the parent process are stripped. Other env (PATH, HOME, language, proxies, etc.) is preserved.
+**Env hygiene**: before applying overrides, all `ANTHROPIC_*`/`CLAUDE_CODE_*` keys leaking from the parent process are stripped in `buildEnv()`. The same strip is applied symmetrically to caller-supplied `opts.env` in `runSession`/`startChat` (`stripManagedNamespaces`) so the contract holds in both directions — opts.env can pass through PATH overrides, proxies, custom test vars, but cannot reintroduce managed keys. Other env (PATH, HOME, language, proxies, etc.) is preserved.
 
 **Variant**: `runSession()`/`startChat()` strip `opts.variant` before delegating. Cloud non-Claude models do not honor Claude's `effort` knob; persisted CLI/UI variants would otherwise leak through.
 

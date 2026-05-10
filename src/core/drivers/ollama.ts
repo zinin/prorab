@@ -96,6 +96,24 @@ function stripContextSuffix(model: string): string {
 }
 
 /**
+ * Strip `ANTHROPIC_*` and `CLAUDE_CODE_*` keys from caller-supplied env.
+ * Mirrors the same strip applied to `process.env` in `buildEnv()` so caller-
+ * supplied env cannot reintroduce managed keys we deliberately removed (e.g.
+ * a stale `ANTHROPIC_API_KEY` or a stray `CLAUDE_CODE_AUTO_COMPACT_WINDOW`).
+ * PATH, HOME, language, proxy, and custom keys pass through.
+ */
+function stripManagedNamespaces(env: Record<string, string | undefined> | undefined): Record<string, string | undefined> {
+  if (!env) return {};
+  const out: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!k.startsWith("ANTHROPIC_") && !k.startsWith("CLAUDE_CODE_")) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
  * OllamaDriver wraps ClaudeDriver via composition (same strategy as CcsDriver).
  *
  * It points the Claude Agent SDK at the local Ollama daemon
@@ -109,7 +127,7 @@ export class OllamaDriver implements AgentDriver {
 
   constructor(
     private model?: string,
-    private useUserSettings: boolean = false,
+    private useUserSettings = false,
   ) {}
 
   async setup(opts: SetupOptions): Promise<void> {
@@ -126,19 +144,24 @@ export class OllamaDriver implements AgentDriver {
         `Ollama agent supports only cloud models (id must contain ':cloud' or '-cloud'); got '${this.model}'.`,
       );
     }
+    // Capture the narrowed (non-undefined) model id once, before any helper
+    // call — TS would otherwise widen `this.model` back to `string | undefined`
+    // across the awaits below. Threading `model` as a parameter avoids the
+    // `this.model as string` casts we'd otherwise need in every helper.
+    const model = this.model;
     // Resolve once and thread through; calling resolveBaseUrl() in each helper
     // would re-parse OLLAMA_HOST and could disagree if the env mutates between
     // calls (theoretical, but cheap to remove).
     const baseUrl = resolveBaseUrl();
     await this.preflightDaemon(baseUrl);
-    await this.preflightModel(baseUrl);
+    await this.preflightModel(baseUrl, model);
     // Pass the stripped (daemon-facing) id to the inner ClaudeDriver — the
     // SDK forwards `queryOptions.model` to `/v1/messages` verbatim, and the
     // daemon rejects the [Nm]/[Nk]-decorated form with HTTP 400. The
-    // decorated `this.model` is still consulted by `parseContextWindow` in
+    // decorated `model` is still consulted by `parseContextWindow` in
     // `buildEnv()` to pin `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
-    this.inner = new ClaudeDriver(stripContextSuffix(this.model as string), this.useUserSettings);
-    this.sessionEnv = this.buildEnv(baseUrl);
+    this.inner = new ClaudeDriver(stripContextSuffix(model), this.useUserSettings);
+    this.sessionEnv = this.buildEnv(baseUrl, model);
     const innerAsDriver = this.inner as AgentDriver;
     if (innerAsDriver.setup) {
       await innerAsDriver.setup(opts);
@@ -163,17 +186,17 @@ export class OllamaDriver implements AgentDriver {
     }
   }
 
-  private async preflightModel(baseUrl: string): Promise<void> {
+  private async preflightModel(baseUrl: string, model: string): Promise<void> {
     // Probe with the bare daemon-facing id; the [Nm]/[Nk] suffix is a prorab-
     // internal decoration that the daemon rejects with HTTP 400.
-    const probeId = stripContextSuffix(this.model as string);
+    const probeId = stripContextSuffix(model);
     const url = `${baseUrl}/v1/models/${encodeURIComponent(probeId)}`;
     let resp: Response;
     try {
       resp = await fetch(url, { signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS) });
     } catch (err) {
       throw new Error(
-        `Ollama daemon at ${baseUrl} failed to verify model '${this.model}': ` +
+        `Ollama daemon at ${baseUrl} failed to verify model '${model}': ` +
           `${err instanceof Error ? err.message : String(err)}. ` +
           `The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
       );
@@ -185,30 +208,35 @@ export class OllamaDriver implements AgentDriver {
     if (resp.status === 404 || resp.status === 401 || resp.status === 403) {
       const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
       throw new Error(
-        `Model '${this.model}' is not available via ollama. ` +
+        `Model '${model}' is not available via ollama. ` +
           `Check 'ollama signin' status, or pick from: ${catalog}`,
+      );
+    }
+    // 400/422 indicate the daemon parsed the model id and rejected it as
+    // malformed (e.g. an unknown decoration the catalog hasn't been taught to
+    // strip). Distinct from "transient" — retrying won't help.
+    if (resp.status === 400 || resp.status === 422) {
+      const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
+      throw new Error(
+        `Ollama daemon at ${baseUrl} rejected model id '${model}' with HTTP ${resp.status} (invalid format). ` +
+          `Pick from: ${catalog}`,
       );
     }
     if (!resp.ok) {
       throw new Error(
-        `Ollama daemon at ${baseUrl} failed to verify model '${this.model}': ` +
+        `Ollama daemon at ${baseUrl} failed to verify model '${model}': ` +
           `HTTP ${resp.status}. The daemon may be transiently overloaded; retry, or check 'ollama serve' logs.`,
       );
     }
   }
 
-  private buildEnv(baseUrl: string): Record<string, string> {
-    const model = this.model as string;
+  private buildEnv(baseUrl: string, model: string): Record<string, string> {
     // The SDK forwards the *_MODEL env vars verbatim to the daemon; the daemon
     // rejects the [Nm]/[Nk]-decorated id with HTTP 400. Strip for daemon-facing
     // env, but keep the decorated `model` for parseContextWindow below.
     const daemonModel = stripContextSuffix(model);
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
 
-    // Drop undefineds left behind by the spread on optional keys.
-    for (const k of Object.keys(env)) {
-      if (env[k] === undefined) delete env[k];
-    }
     // Strip any ANTHROPIC_*/CLAUDE_CODE_* leaked from the parent process so a
     // stale ANTHROPIC_API_KEY (real Anthropic key) cannot reach the inner SDK.
     for (const k of Object.keys(env)) {
@@ -242,10 +270,12 @@ export class OllamaDriver implements AgentDriver {
   runSession(opts: SessionOptions): Promise<IterationResult> {
     const driver = this.requireDriver();
     const { variant: _variant, env: callerEnv, ...rest } = opts;
-    // Caller-supplied env survives for unmanaged keys (PATH/HOME/proxies);
-    // sessionEnv wins for the ANTHROPIC_*/CLAUDE_CODE_* keys we manage.
+    // Caller-supplied ANTHROPIC_*/CLAUDE_CODE_* keys are stripped (same strip
+    // buildEnv applies to process.env) — otherwise opts.env could reintroduce
+    // managed keys we deliberately removed. PATH/HOME/proxies/custom keys
+    // pass through; sessionEnv wins for our 7 managed overrides.
     const mergedEnv = this.sessionEnv
-      ? { ...(callerEnv ?? {}), ...this.sessionEnv }
+      ? { ...stripManagedNamespaces(callerEnv), ...this.sessionEnv }
       : callerEnv;
     return driver.runSession({ ...rest, env: mergedEnv });
   }
@@ -260,10 +290,12 @@ export class OllamaDriver implements AgentDriver {
   startChat(opts: ChatOptions): AsyncIterable<ChatEvent> {
     const driver = this.requireDriver();
     const { variant: _variant, env: callerEnv, ...rest } = opts;
-    // Caller-supplied env survives for unmanaged keys (PATH/HOME/proxies);
-    // sessionEnv wins for the ANTHROPIC_*/CLAUDE_CODE_* keys we manage.
+    // Caller-supplied ANTHROPIC_*/CLAUDE_CODE_* keys are stripped (same strip
+    // buildEnv applies to process.env) — otherwise opts.env could reintroduce
+    // managed keys we deliberately removed. PATH/HOME/proxies/custom keys
+    // pass through; sessionEnv wins for our 7 managed overrides.
     const mergedEnv = this.sessionEnv
-      ? { ...(callerEnv ?? {}), ...this.sessionEnv }
+      ? { ...stripManagedNamespaces(callerEnv), ...this.sessionEnv }
       : callerEnv;
     return driver.startChat({ ...rest, env: mergedEnv });
   }
