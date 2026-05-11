@@ -17,6 +17,7 @@ vi.mock("../core/drivers/claude.js", () => {
 
 import { OllamaDriver } from "../core/drivers/ollama.js";
 import { ClaudeDriver } from "../core/drivers/claude.js";
+import { getContextWindow, _resetContextWindowCache } from "../core/drivers/context-window.js";
 
 describe("OllamaDriver", () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -25,6 +26,10 @@ describe("OllamaDriver", () => {
   beforeEach(() => {
     originalEnv = { ...process.env };
     originalFetch = globalThis.fetch;
+    // Isolate the shared context-window cache across tests. setContextWindow()
+    // is a module-level cache shared by every driver in the worker — without
+    // resetting, a value set in one test would leak into the next.
+    _resetContextWindowCache();
     vi.clearAllMocks();
   });
 
@@ -33,12 +38,12 @@ describe("OllamaDriver", () => {
     globalThis.fetch = originalFetch;
   });
 
-  function mockOllamaWith(modelId: string): void {
-    // Accept both the original (decorated) id and its stripped daemon-facing
-    // form — the driver probes with stripped, but tests construct the driver
-    // with the decorated catalog id.
-    const stripped = modelId.replace(/\[(\d+)([km])\]/i, "");
-    const accept = new Set([modelId, stripped]);
+  /**
+   * Mock the daemon so /api/version returns 200 and /v1/models/<id> returns
+   * 200 only for the ids in `accessible`. Defaults to a single id.
+   */
+  function mockOllamaWith(...accessibleIds: string[]): void {
+    const accept = new Set(accessibleIds);
     globalThis.fetch = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
@@ -68,21 +73,17 @@ describe("OllamaDriver", () => {
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
-    it("accepts -cloud variant in model id", async () => {
-      mockOllamaWith("qwen3-coder:480b-cloud[1m]");
-      const driver = new OllamaDriver("qwen3-coder:480b-cloud[1m]");
-      await expect(driver.setup({ verbosity: "info" })).resolves.toBeUndefined();
-    });
-
-    it("accepts gpt-oss:120b-cloud (-cloud, no suffix)", async () => {
-      mockOllamaWith("gpt-oss:120b-cloud");
-      const driver = new OllamaDriver("gpt-oss:120b-cloud");
+    it("accepts -cloud variant in model id (id outside catalog still passes guard)", async () => {
+      // The cloud-only guard accepts ':cloud' OR '-cloud' substring. The model
+      // does not have to be in OLLAMA_CLOUD_CATALOG; preflight will probe it.
+      mockOllamaWith("fake:99b-cloud");
+      const driver = new OllamaDriver("fake:99b-cloud");
       await expect(driver.setup({ verbosity: "info" })).resolves.toBeUndefined();
     });
 
     it("throws when daemon /api/version fetch rejects", async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
         /daemon is not reachable.*ollama serve/,
       );
@@ -92,7 +93,7 @@ describe("OllamaDriver", () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
         new Response("err", { status: 500 }),
       );
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
         /daemon is not reachable/,
       );
@@ -106,9 +107,9 @@ describe("OllamaDriver", () => {
         return new Response("nope", { status: 404 });
       }) as unknown as typeof fetch;
 
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
-        /Model 'deepseek-v4-pro:cloud\[1m\]' is not available.*ollama signin/,
+        /Model 'deepseek-v4-pro:cloud' is not available.*ollama signin/,
       );
     });
 
@@ -167,7 +168,7 @@ describe("OllamaDriver", () => {
         return new Response("nope", { status: 404 });
       }) as unknown as typeof fetch;
 
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
         /failed to verify model.*transiently overloaded|daemon at .* failed to verify/,
       );
@@ -181,15 +182,15 @@ describe("OllamaDriver", () => {
         return new Response("nope", { status: 404 });
       }) as unknown as typeof fetch;
 
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(
         /failed to verify model/,
       );
     });
 
-    it("builds session env with required Anthropic + Claude Code vars", async () => {
-      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+    it("builds session env with required Anthropic + Claude Code vars (model id verbatim)", async () => {
+      mockOllamaWith("deepseek-v4-pro:cloud");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await driver.setup({ verbosity: "info" });
 
       const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
@@ -203,8 +204,6 @@ describe("OllamaDriver", () => {
       expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:11434");
       expect(calledOpts.env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
       expect(calledOpts.env.ANTHROPIC_API_KEY).toBe("");
-      // *_MODEL env vars carry the bare daemon-facing id (suffix stripped) —
-      // the daemon rejects the decorated form with HTTP 400.
       expect(calledOpts.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("deepseek-v4-pro:cloud");
       expect(calledOpts.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("deepseek-v4-pro:cloud");
       expect(calledOpts.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("deepseek-v4-pro:cloud");
@@ -218,6 +217,9 @@ describe("OllamaDriver", () => {
       // Parent process has a real key set; it must NOT survive into the inner SDK env.
       process.env.ANTHROPIC_API_KEY = "sk-ant-real-parent-key";
       process.env.ANTHROPIC_RETRY = "9";
+      // Set a parent-process value that buildEnv must strip; the model is in
+      // the catalog so the driver re-sets the var to the catalog value (256K),
+      // proving the strip-then-set order.
       process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = "999";
 
       mockOllamaWith("kimi-k2.6:cloud");
@@ -231,9 +233,9 @@ describe("OllamaDriver", () => {
       });
       const env = innerInstance.runSession.mock.calls[0][0].env;
 
-      expect(env.ANTHROPIC_API_KEY).toBe("");                  // stripped + re-set to ""
-      expect(env.ANTHROPIC_RETRY).toBeUndefined();             // stripped, no override
-      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined(); // model has no [Nm]/[Nk] suffix → stripped, no re-set
+      expect(env.ANTHROPIC_API_KEY).toBe("");                       // stripped + re-set to ""
+      expect(env.ANTHROPIC_RETRY).toBeUndefined();                  // stripped, no override
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("256000");   // stripped then re-set from catalog
 
       await driver.teardown();
     });
@@ -274,10 +276,10 @@ describe("OllamaDriver", () => {
     });
 
     it("strips caller ANTHROPIC_*/CLAUDE_CODE_* keys (mirrors parent-process strip)", async () => {
-      // Model without [Nm]/[Nk] suffix → CLAUDE_CODE_AUTO_COMPACT_WINDOW is NOT
-      // in sessionEnv. Without the caller-side strip, a caller-supplied value
-      // would survive the merge and reach the inner SDK. ANTHROPIC_RETRY is
-      // never in sessionEnv (not one of our 7 managed overrides).
+      // A caller-supplied CLAUDE_CODE_AUTO_COMPACT_WINDOW must not override
+      // the value derived from the catalog. ANTHROPIC_RETRY is not in
+      // sessionEnv (not one of our managed overrides); without the strip it
+      // would leak through.
       mockOllamaWith("kimi-k2.6:cloud");
       const driver = new OllamaDriver("kimi-k2.6:cloud");
       await driver.setup({ verbosity: "info" });
@@ -295,15 +297,15 @@ describe("OllamaDriver", () => {
       const env = innerInstance.runSession.mock.calls[0][0].env;
       expect(env.CUSTOM_USER_VAR).toBe("kept");
       expect(env.ANTHROPIC_RETRY).toBeUndefined();
-      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("256000");    // catalog value wins
 
       await driver.teardown();
     });
 
     it("env ANTHROPIC_BASE_URL honors OLLAMA_HOST (host:port → http://...)", async () => {
       process.env.OLLAMA_HOST = "192.168.1.10:11434";
-      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+      mockOllamaWith("deepseek-v4-pro:cloud");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await driver.setup({ verbosity: "info" });
 
       const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
@@ -339,9 +341,9 @@ describe("OllamaDriver", () => {
       await expect(driver.setup({ verbosity: "info" })).rejects.toThrow(/Unix-socket/);
     });
 
-    it("sets CLAUDE_CODE_AUTO_COMPACT_WINDOW from [1m] suffix", async () => {
-      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+    it("sets CLAUDE_CODE_AUTO_COMPACT_WINDOW from catalog contextWindow (1M for deepseek-v4-pro:cloud)", async () => {
+      mockOllamaWith("deepseek-v4-pro:cloud");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
       await driver.setup({ verbosity: "info" });
 
       const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
@@ -355,58 +357,12 @@ describe("OllamaDriver", () => {
       await driver.teardown();
     });
 
-    it("strips [1m] suffix when probing the daemon", async () => {
-      // The daemon (0.23.x) rejects the decorated `deepseek-v4-pro:cloud[1m]`
-      // with HTTP 400. The driver must probe with the stripped form.
-      const fetchMock = vi.fn(async (url: string) => {
-        const u = String(url);
-        if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
-        if (u.includes("/v1/models/")) {
-          const id = decodeURIComponent(u.replace(/.*\/v1\/models\//, ""));
-          return new Response(JSON.stringify({ id }), { status: id === "deepseek-v4-pro:cloud" ? 200 : 404 });
-        }
-        return new Response("nope", { status: 404 });
-      }) as unknown as typeof fetch;
-      globalThis.fetch = fetchMock;
-
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
-      await driver.setup({ verbosity: "info" });
-
-      // Locate the /v1/models/<id> probe and assert the decoded path is bare.
-      const calls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
-      const probeCall = calls.find((c) => c.includes("/v1/models/"));
-      expect(probeCall).toBeDefined();
-      const decoded = decodeURIComponent(probeCall!.replace(/.*\/v1\/models\//, ""));
-      expect(decoded).toBe("deepseek-v4-pro:cloud");      // suffix stripped
-      expect(decoded).not.toMatch(/\[/);                   // no leftover brackets
-
-      await driver.teardown();
-    });
-
-    it("passes the stripped (daemon-facing) id to the inner ClaudeDriver constructor", async () => {
-      // Regression for the SDK-constructor leak: even with stripped env vars,
-      // ClaudeDriver forwards its constructor `model` to `queryOptions.model`,
-      // which the SDK passes verbatim to /v1/messages. The daemon rejects the
-      // decorated `[1m]` form with HTTP 400, so the inner driver must receive
-      // the stripped id. The decorated form is still kept on `this.model` for
-      // `parseContextWindow()` → `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
-      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
-      await driver.setup({ verbosity: "info" });
-
-      const ctorArgs = vi.mocked(ClaudeDriver).mock.calls[0];
-      expect(ctorArgs[0]).toBe("deepseek-v4-pro:cloud");
-      expect(ctorArgs[0] as string).not.toMatch(/\[/);
-
-      await driver.teardown();
-    });
-
-    it("env ANTHROPIC_DEFAULT_*_MODEL strip the [1m] suffix", async () => {
-      // The SDK forwards these vars verbatim to the daemon, which 400s on the
-      // decorated form. They must carry the stripped (bare) id, while
-      // CLAUDE_CODE_AUTO_COMPACT_WINDOW is still derived from the suffix.
-      mockOllamaWith("deepseek-v4-pro:cloud[1m]");
-      const driver = new OllamaDriver("deepseek-v4-pro:cloud[1m]");
+    it("sets CLAUDE_CODE_AUTO_COMPACT_WINDOW from catalog contextWindow (198K for glm-5.1:cloud, sub-200K case)", async () => {
+      // glm-5.1:cloud has 198K — below the 200K default. The catalog value
+      // must still propagate (the UI guard relaxation in context-window.ts
+      // accepts sub-200K values for models unknown to the substring table).
+      mockOllamaWith("glm-5.1:cloud");
+      const driver = new OllamaDriver("glm-5.1:cloud");
       await driver.setup({ verbosity: "info" });
 
       const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
@@ -414,69 +370,18 @@ describe("OllamaDriver", () => {
         prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
         maxTurns: 1, verbosity: "info", unitId: "u1",
       });
-      const env = innerInstance.runSession.mock.calls[0][0].env;
-
-      // All four model-default env vars: bare id, no brackets.
-      for (const key of [
-        "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL",
-      ]) {
-        expect(env[key]).toBe("deepseek-v4-pro:cloud");
-        expect(env[key]).not.toMatch(/\[/);
-      }
-      // CLAUDE_CODE_AUTO_COMPACT_WINDOW still derived from the *decorated* id.
-      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
+      expect(innerInstance.runSession.mock.calls[0][0].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("198000");
 
       await driver.teardown();
     });
 
-    it("sets CLAUDE_CODE_AUTO_COMPACT_WINDOW from [200k] suffix", async () => {
-      mockOllamaWith("foo-model:cloud[200k]");
-      const driver = new OllamaDriver("foo-model:cloud[200k]");
-      await driver.setup({ verbosity: "info" });
-
-      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
-      await driver.runSession({
-        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
-        maxTurns: 1, verbosity: "info", unitId: "u1",
-      });
-      const calledOpts = innerInstance.runSession.mock.calls[0][0];
-      expect(calledOpts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("200000");
-
-      await driver.teardown();
-    });
-
-    it("omits CLAUDE_CODE_AUTO_COMPACT_WINDOW when no [Nk]/[Nm] suffix", async () => {
-      mockOllamaWith("kimi-k2.6:cloud");
-      const driver = new OllamaDriver("kimi-k2.6:cloud");
-      await driver.setup({ verbosity: "info" });
-
-      const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
-      await driver.runSession({
-        prompt: "hi", systemPrompt: "sys", cwd: "/tmp",
-        maxTurns: 1, verbosity: "info", unitId: "u1",
-      });
-      const calledOpts = innerInstance.runSession.mock.calls[0][0];
-      expect(calledOpts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
-
-      await driver.teardown();
-    });
-
-    it("ignores decimal suffix [1.5m] (regex matches integers only)", async () => {
-      // Custom mock: probe must match the exact id including the suffix.
-      globalThis.fetch = vi.fn(async (url: string) => {
-        const u = String(url);
-        if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
-        if (u.includes("/v1/models/")) {
-          const id = decodeURIComponent(u.replace(/.*\/v1\/models\//, ""));
-          return new Response(JSON.stringify({ id }), { status: id === "weird-model:cloud[1.5m]" ? 200 : 404 });
-        }
-        return new Response("", { status: 404 });
-      }) as unknown as typeof fetch;
-
-      const driver = new OllamaDriver("weird-model:cloud[1.5m]");
+    it("omits CLAUDE_CODE_AUTO_COMPACT_WINDOW for models not in the catalog", async () => {
+      // Cloud-only guard accepts any ':cloud' / '-cloud' id; if the daemon
+      // serves it, setup() succeeds. But buildEnv must NOT invent a number —
+      // CLAUDE_CODE_AUTO_COMPACT_WINDOW is omitted and Claude Code uses its
+      // default. UI also falls back to 200K (no setContextWindow call).
+      mockOllamaWith("custom:cloud");
+      const driver = new OllamaDriver("custom:cloud");
       await driver.setup({ verbosity: "info" });
 
       const innerInstance = vi.mocked(ClaudeDriver).mock.results[0].value;
@@ -485,6 +390,55 @@ describe("OllamaDriver", () => {
         maxTurns: 1, verbosity: "info", unitId: "u1",
       });
       expect(innerInstance.runSession.mock.calls[0][0].env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+
+      await driver.teardown();
+    });
+
+    it("publishes contextWindow to the context-window cache for catalog models (UI lookup)", async () => {
+      // Regression for the UI showing "/ 200K" for a 1M model. Without
+      // setContextWindow(), getContextWindow("deepseek-v4-pro:cloud") falls
+      // back to DEFAULT (200K) because no substring in CONTEXT_WINDOWS
+      // matches Ollama-cloud ids.
+      mockOllamaWith("deepseek-v4-pro:cloud");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      expect(getContextWindow("deepseek-v4-pro:cloud")).toBe(1_000_000);
+
+      await driver.teardown();
+    });
+
+    it("publishes sub-default contextWindow (glm-5.1:cloud → 198K) to the cache", async () => {
+      mockOllamaWith("glm-5.1:cloud");
+      const driver = new OllamaDriver("glm-5.1:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      expect(getContextWindow("glm-5.1:cloud")).toBe(198_000);
+
+      await driver.teardown();
+    });
+
+    it("does NOT publish contextWindow for models outside the catalog", async () => {
+      mockOllamaWith("custom:cloud");
+      const driver = new OllamaDriver("custom:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      // No cache entry → getContextWindow falls through to the 200K default.
+      expect(getContextWindow("custom:cloud")).toBe(200_000);
+
+      await driver.teardown();
+    });
+
+    it("passes the model id verbatim to the inner ClaudeDriver constructor", async () => {
+      // Regression: an earlier iteration stripped a `[Nm]/[Nk]` suffix before
+      // forwarding to ClaudeDriver. With the explicit-catalog scheme the id
+      // has no decoration and must reach the constructor as-is.
+      mockOllamaWith("deepseek-v4-pro:cloud");
+      const driver = new OllamaDriver("deepseek-v4-pro:cloud");
+      await driver.setup({ verbosity: "info" });
+
+      const ctorArgs = vi.mocked(ClaudeDriver).mock.calls[0];
+      expect(ctorArgs[0]).toBe("deepseek-v4-pro:cloud");
 
       await driver.teardown();
     });
@@ -503,6 +457,7 @@ describe("OllamaDriver", () => {
       const calledOpts = innerInstance.startChat.mock.calls[0][0];
       expect(calledOpts.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:11434");
       expect(calledOpts.env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+      expect(calledOpts.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("256000");
 
       await driver.teardown();
     });
@@ -558,7 +513,7 @@ describe("OllamaDriver", () => {
       const env = innerInstance.startChat.mock.calls[0][0].env;
       expect(env.CUSTOM_USER_VAR).toBe("kept");
       expect(env.ANTHROPIC_RETRY).toBeUndefined();
-      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBeUndefined();
+      expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("256000");      // catalog wins
 
       await driver.teardown();
     });
@@ -620,12 +575,7 @@ describe("OllamaDriver", () => {
     });
 
     it("probes each catalog entry via /v1/models/<id> and keeps only HTTP-200 ones", async () => {
-      // The driver probes with the stripped (daemon-facing) form; the catalog
-      // entry `deepseek-v4-pro:cloud[1m]` is probed as `deepseek-v4-pro:cloud`.
-      // Include both forms in the accessible Set so the test stays robust to
-      // either probing strategy.
       const accessible = new Set([
-        "deepseek-v4-pro:cloud[1m]",
         "deepseek-v4-pro:cloud",
         "kimi-k2.6:cloud",
         "minimax-m2.7:cloud",
@@ -643,62 +593,32 @@ describe("OllamaDriver", () => {
 
       const models = await new OllamaDriver().listModels();
       const ids = models.map((x) => x.id).sort();
-      // Returned ids are the *decorated* catalog ids — UI/parseContextWindow
-      // need the [Nm] suffix to drive CLAUDE_CODE_AUTO_COMPACT_WINDOW.
-      expect(ids).toEqual(["deepseek-v4-pro:cloud[1m]", "kimi-k2.6:cloud", "minimax-m2.7:cloud"]);
+      expect(ids).toEqual(["deepseek-v4-pro:cloud", "kimi-k2.6:cloud", "minimax-m2.7:cloud"]);
       // ModelEntry must NOT carry a `variants` field — UI hides effort dropdown via that.
       for (const m of models) expect(m).not.toHaveProperty("variants");
     });
 
-    it("probes daemon with stripped form but returns decorated catalog id", async () => {
-      // Daemon rejects [1m]-decorated ids; driver must probe stripped form.
-      // ModelEntry must still carry the decorated id so `parseContextWindow`
-      // / UI see the suffix when the user picks the model.
-      const accessible = new Set([
-        "deepseek-v4-pro:cloud",     // stripped form of `deepseek-v4-pro:cloud[1m]`
-        "qwen3-coder:480b-cloud",    // stripped form of `qwen3-coder:480b-cloud[1m]`
-      ]);
-      const fetchMock = vi.fn(async (url: string) => {
+    it("returns all 6 catalog entries when every probe succeeds", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
         const u = String(url);
         if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
         const m = u.match(/\/v1\/models\/(.+)$/);
         if (m) {
           const decoded = decodeURIComponent(m[1]);
-          return new Response(JSON.stringify({ id: decoded }), { status: accessible.has(decoded) ? 200 : 404 });
+          return new Response(JSON.stringify({ id: decoded }), { status: 200 });
         }
         return new Response("", { status: 404 });
       }) as unknown as typeof fetch;
-      globalThis.fetch = fetchMock;
 
       const models = await new OllamaDriver().listModels();
-
-      // Probe URLs decode to bare ids — no brackets.
-      const probeCalls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls
-        .map((c) => String(c[0]))
-        .filter((u) => u.includes("/v1/models/"));
-      for (const c of probeCalls) {
-        const decoded = decodeURIComponent(c.replace(/.*\/v1\/models\//, ""));
-        expect(decoded).not.toMatch(/\[/);
-      }
-
-      // But returned ids preserve the catalog decoration.
-      const ids = models.map((x) => x.id).sort();
-      expect(ids).toEqual(["deepseek-v4-pro:cloud[1m]", "qwen3-coder:480b-cloud[1m]"]);
-    });
-
-    it("URL-encodes catalog ids when probing (square brackets do not break the URL)", async () => {
-      const fetchMock = vi.fn(async (url: string) => {
-        if (String(url).endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
-        return new Response("", { status: 404 });          // all 404 — only checking call shape
-      }) as unknown as typeof fetch;
-      globalThis.fetch = fetchMock;
-
-      await new OllamaDriver().listModels();
-      const calls = (fetchMock as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
-      // No raw `[` should leak into the URL — encodeURIComponent turns it into %5B.
-      for (const c of calls) {
-        if (c.includes("/v1/models/")) expect(c).not.toMatch(/\[/);
-      }
+      expect(models.map((x) => x.id).sort()).toEqual([
+        "deepseek-v4-flash:cloud",
+        "deepseek-v4-pro:cloud",
+        "glm-5.1:cloud",
+        "kimi-k2.6:cloud",
+        "minimax-m2.7:cloud",
+        "qwen3.5:cloud",
+      ]);
     });
 
     it("uses OLLAMA_HOST (host:port form)", async () => {

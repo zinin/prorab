@@ -8,6 +8,7 @@ import type {
   SetupOptions,
 } from "./types.js";
 import { ClaudeDriver } from "./claude.js";
+import { setContextWindow } from "./context-window.js";
 
 /**
  * Read the preflight timeout from `OLLAMA_PREFLIGHT_TIMEOUT_MS` and validate
@@ -26,21 +27,31 @@ function resolvePreflightTimeout(): number {
 const PREFLIGHT_TIMEOUT_MS = resolvePreflightTimeout();
 
 /**
- * Hardcoded list of cloud model ids prorab knows how to surface. Mirrors the
- * cloud catalog advertised by `ollama launch claude` upstream. Bump when new
- * cloud models ship; per-model probing in listModels() filters to whatever
- * the local daemon can actually serve, so false positives are auto-pruned.
- * The `[Nm]/[Nk]` suffix is a prorab-internal decoration consumed by
- * `parseContextWindow()` to set `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; the daemon
- * never sees it because `stripContextSuffix()` removes it before any HTTP
- * probe or model-id env var.
+ * Cloud model catalog with explicit context-window limits, sourced from the
+ * per-model pages on https://ollama.com. Each entry has the bare daemon-facing
+ * model id and the limit in tokens.
+ *
+ * Two consumers read `contextWindow`:
+ *   1. `buildEnv()` — sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` so the inner
+ *      Claude Code CLI triggers autocompaction at the right threshold.
+ *   2. `setup()` — publishes the value into `context-window.ts`'s cache via
+ *      `setContextWindow()` so the prorab UI shows the correct lookup limit
+ *      in `agent:context_usage` events (the substring matcher in
+ *      `context-window.ts` has no knowledge of Ollama-cloud model ids and
+ *      would otherwise fall through to the 200K default).
+ *
+ * Bump this list when Ollama publishes new cloud models. Models not present
+ * here are still accepted by `setup()` (the cloud-only guard + per-model
+ * probe still apply) but receive no context-window publication — the UI then
+ * falls back to the 200K default.
  */
-const OLLAMA_CLOUD_CATALOG: ReadonlyArray<string> = [
-  "deepseek-v4-pro:cloud[1m]",
-  "kimi-k2.6:cloud",
-  "minimax-m2.7:cloud",
-  "qwen3-coder:480b-cloud[1m]",
-  "gpt-oss:120b-cloud",
+const OLLAMA_CLOUD_CATALOG: ReadonlyArray<{ id: string; contextWindow: number }> = [
+  { id: "deepseek-v4-pro:cloud",   contextWindow: 1_000_000 },
+  { id: "deepseek-v4-flash:cloud", contextWindow: 1_000_000 },
+  { id: "kimi-k2.6:cloud",         contextWindow:   256_000 },
+  { id: "minimax-m2.7:cloud",      contextWindow:   200_000 },
+  { id: "qwen3.5:cloud",           contextWindow:   256_000 },
+  { id: "glm-5.1:cloud",           contextWindow:   198_000 },
 ];
 
 function resolveBaseUrl(): string {
@@ -56,43 +67,6 @@ function resolveBaseUrl(): string {
   }
   const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
   return withScheme.replace(/\/+$/, "");
-}
-
-/**
- * Single source of truth for the context-window suffix shape — `[Nk]` / `[Nm]`,
- * integer only, case-insensitive, anchored at end-of-string so a `[Nm]`
- * fragment buried mid-id (a hypothetical `foo:cloud[1m]-beta`) is left intact
- * instead of producing a half-stripped daemon id like `foo:cloud-beta`. Used by
- * both `parseContextWindow` (extracts the numeric value) and
- * `stripContextSuffix` (removes the suffix to get the daemon-facing id).
- * Decimals (`[1.5m]`) and other units intentionally do not match.
- */
-const CONTEXT_WINDOW_SUFFIX_RE = /\[(\d+)([km])\]$/i;
-
-/**
- * Extract the context-window hint from a model id like
- * `deepseek-v4-pro:cloud[1m]` → 1_000_000, `foo:cloud[200k]` → 200_000.
- * Returns null if the model has no `[Nk]`/`[Nm]` suffix; the caller then
- * omits CLAUDE_CODE_AUTO_COMPACT_WINDOW and Claude Code uses its default.
- */
-function parseContextWindow(model: string): number | null {
-  const match = CONTEXT_WINDOW_SUFFIX_RE.exec(model);
-  if (!match) return null;
-  const [, num, unit] = match;
-  const multiplier = unit.toLowerCase() === "m" ? 1_000_000 : 1_000;
-  return Number(num) * multiplier;
-}
-
-/**
- * Strip a `[Nk]` / `[Nm]` context-window suffix from a model id, returning the
- * bare daemon-facing id. The Ollama daemon (0.23.x) rejects the decorated
- * form with HTTP 400 "invalid model name" — the suffix is a prorab-internal
- * decoration, used only by `parseContextWindow` to pin
- * `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Returns the input unchanged when the
- * suffix is absent (or malformed, e.g. decimal `[1.5m]`).
- */
-function stripContextSuffix(model: string): string {
-  return model.replace(CONTEXT_WINDOW_SUFFIX_RE, "");
 }
 
 /**
@@ -144,24 +118,28 @@ export class OllamaDriver implements AgentDriver {
         `Ollama agent supports only cloud models (id must contain ':cloud' or '-cloud'); got '${this.model}'.`,
       );
     }
-    // Capture the narrowed (non-undefined) model id once, before any helper
-    // call — TS would otherwise widen `this.model` back to `string | undefined`
-    // across the awaits below. Threading `model` as a parameter avoids the
-    // `this.model as string` casts we'd otherwise need in every helper.
+    // Capture the narrowed (non-undefined) model id once.
     const model = this.model;
-    // Resolve once and thread through; calling resolveBaseUrl() in each helper
-    // would re-parse OLLAMA_HOST and could disagree if the env mutates between
-    // calls (theoretical, but cheap to remove).
     const baseUrl = resolveBaseUrl();
     await this.preflightDaemon(baseUrl);
     await this.preflightModel(baseUrl, model);
-    // Pass the stripped (daemon-facing) id to the inner ClaudeDriver — the
-    // SDK forwards `queryOptions.model` to `/v1/messages` verbatim, and the
-    // daemon rejects the [Nm]/[Nk]-decorated form with HTTP 400. The
-    // decorated `model` is still consulted by `parseContextWindow` in
-    // `buildEnv()` to pin `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
-    this.inner = new ClaudeDriver(stripContextSuffix(model), this.useUserSettings);
-    this.sessionEnv = this.buildEnv(baseUrl, model);
+
+    // Look up the context window from the hardcoded catalog. Models not in
+    // the catalog (custom cloud ids, future entries) get `undefined` — the
+    // env var is omitted and the UI falls back to the 200K default.
+    const catalogEntry = OLLAMA_CLOUD_CATALOG.find((e) => e.id === model);
+    const contextWindow = catalogEntry?.contextWindow;
+
+    // Publish the limit into the shared cache read by ClaudeDriver when
+    // emitting `agent:context_usage`. Without this, getContextWindow(model)
+    // falls back to DEFAULT_CONTEXT_WINDOW (200K) because no substring in
+    // CONTEXT_WINDOWS (opus-4/sonnet-4/haiku) matches an Ollama cloud id.
+    if (contextWindow !== undefined) {
+      setContextWindow(model, contextWindow);
+    }
+
+    this.inner = new ClaudeDriver(model, this.useUserSettings);
+    this.sessionEnv = this.buildEnv(baseUrl, model, contextWindow);
     const innerAsDriver = this.inner as AgentDriver;
     if (innerAsDriver.setup) {
       await innerAsDriver.setup(opts);
@@ -187,10 +165,7 @@ export class OllamaDriver implements AgentDriver {
   }
 
   private async preflightModel(baseUrl: string, model: string): Promise<void> {
-    // Probe with the bare daemon-facing id; the [Nm]/[Nk] suffix is a prorab-
-    // internal decoration that the daemon rejects with HTTP 400.
-    const probeId = stripContextSuffix(model);
-    const url = `${baseUrl}/v1/models/${encodeURIComponent(probeId)}`;
+    const url = `${baseUrl}/v1/models/${encodeURIComponent(model)}`;
     let resp: Response;
     try {
       resp = await fetch(url, { signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS) });
@@ -206,17 +181,16 @@ export class OllamaDriver implements AgentDriver {
     // Without this, a revoked/expired profile would surface as the misleading
     // "transient daemon issue" branch below.
     if (resp.status === 404 || resp.status === 401 || resp.status === 403) {
-      const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
+      const catalog = OLLAMA_CLOUD_CATALOG.map((e) => e.id).join(", ");
       throw new Error(
         `Model '${model}' is not available via ollama. ` +
           `Check 'ollama signin' status, or pick from: ${catalog}`,
       );
     }
     // 400/422 indicate the daemon parsed the model id and rejected it as
-    // malformed (e.g. an unknown decoration the catalog hasn't been taught to
-    // strip). Distinct from "transient" — retrying won't help.
+    // malformed. Distinct from "transient" — retrying won't help.
     if (resp.status === 400 || resp.status === 422) {
-      const catalog = OLLAMA_CLOUD_CATALOG.join(", ");
+      const catalog = OLLAMA_CLOUD_CATALOG.map((e) => e.id).join(", ");
       throw new Error(
         `Ollama daemon at ${baseUrl} rejected model id '${model}' with HTTP ${resp.status} (invalid format). ` +
           `Pick from: ${catalog}`,
@@ -230,11 +204,7 @@ export class OllamaDriver implements AgentDriver {
     }
   }
 
-  private buildEnv(baseUrl: string, model: string): Record<string, string> {
-    // The SDK forwards the *_MODEL env vars verbatim to the daemon; the daemon
-    // rejects the [Nm]/[Nk]-decorated id with HTTP 400. Strip for daemon-facing
-    // env, but keep the decorated `model` for parseContextWindow below.
-    const daemonModel = stripContextSuffix(model);
+  private buildEnv(baseUrl: string, model: string, contextWindow: number | undefined): Record<string, string> {
     const env: Record<string, string> = { ...process.env } as Record<string, string>;
 
     // Strip any ANTHROPIC_*/CLAUDE_CODE_* leaked from the parent process so a
@@ -246,14 +216,13 @@ export class OllamaDriver implements AgentDriver {
     env.ANTHROPIC_BASE_URL = baseUrl;
     env.ANTHROPIC_AUTH_TOKEN = "ollama";        // sentinel; takes precedence over ANTHROPIC_API_KEY
     env.ANTHROPIC_API_KEY = "";                 // belt-and-suspenders: ensure no host key sneaks back via SDK defaults
-    env.ANTHROPIC_DEFAULT_OPUS_MODEL = daemonModel;
-    env.ANTHROPIC_DEFAULT_SONNET_MODEL = daemonModel;
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = daemonModel;
-    env.CLAUDE_CODE_SUBAGENT_MODEL = daemonModel;
+    env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+    env.CLAUDE_CODE_SUBAGENT_MODEL = model;
     env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";   // matches `ollama launch claude` Run(); suppresses "Created by Claude Code" attribution
-    const ctx = parseContextWindow(model);
-    if (ctx !== null) {
-      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(ctx);
+    if (contextWindow !== undefined) {
+      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(contextWindow);
     }
     return env;
   }
@@ -273,7 +242,7 @@ export class OllamaDriver implements AgentDriver {
     // Caller-supplied ANTHROPIC_*/CLAUDE_CODE_* keys are stripped (same strip
     // buildEnv applies to process.env) — otherwise opts.env could reintroduce
     // managed keys we deliberately removed. PATH/HOME/proxies/custom keys
-    // pass through; sessionEnv wins for our 7 managed overrides.
+    // pass through; sessionEnv wins for our managed overrides.
     const mergedEnv = this.sessionEnv
       ? { ...stripManagedNamespaces(callerEnv), ...this.sessionEnv }
       : callerEnv;
@@ -290,10 +259,6 @@ export class OllamaDriver implements AgentDriver {
   startChat(opts: ChatOptions): AsyncIterable<ChatEvent> {
     const driver = this.requireDriver();
     const { variant: _variant, env: callerEnv, ...rest } = opts;
-    // Caller-supplied ANTHROPIC_*/CLAUDE_CODE_* keys are stripped (same strip
-    // buildEnv applies to process.env) — otherwise opts.env could reintroduce
-    // managed keys we deliberately removed. PATH/HOME/proxies/custom keys
-    // pass through; sessionEnv wins for our 7 managed overrides.
     const mergedEnv = this.sessionEnv
       ? { ...stripManagedNamespaces(callerEnv), ...this.sessionEnv }
       : callerEnv;
@@ -330,16 +295,12 @@ export class OllamaDriver implements AgentDriver {
     }
 
     const checks = await Promise.all(
-      OLLAMA_CLOUD_CATALOG.map(async (id) => {
-        // Probe with stripped (daemon-facing) form, but return the decorated
-        // catalog id so the UI / `parseContextWindow` see the [Nm]/[Nk] suffix
-        // when the user picks the model.
-        const probeId = stripContextSuffix(id);
+      OLLAMA_CLOUD_CATALOG.map(async (entry) => {
         try {
-          const r = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(probeId)}`, {
+          const r = await fetch(`${baseUrl}/v1/models/${encodeURIComponent(entry.id)}`, {
             signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
           });
-          return r.ok ? id : null;
+          return r.ok ? entry.id : null;
         } catch {
           return null;
         }

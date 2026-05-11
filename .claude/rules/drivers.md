@@ -50,7 +50,7 @@ Standalone driver using `@openai/codex-sdk`. SDK spawns Codex CLI as subprocess 
 
 ## OllamaDriver
 
-Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after stripping `opts.variant` and merging a per-session env override that points the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides — host:port gets `http://` prepended, full URL kept verbatim with trailing slash stripped, unix-socket / whitespace forms rejected). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud[1m]` and `kimi-k2.6:cloud` without depending on a CCS proxy.
+Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after stripping `opts.variant` and merging a per-session env override that points the Claude Agent SDK at the local Ollama daemon (`http://127.0.0.1:11434` by default; `OLLAMA_HOST` overrides — host:port gets `http://` prepended, full URL kept verbatim with trailing slash stripped, unix-socket / whitespace forms rejected). Lets prorab use Ollama-cloud models like `deepseek-v4-pro:cloud` and `kimi-k2.6:cloud` without depending on a CCS proxy.
 
 **Setup**:
 - Reject non-cloud models (id must contain `:cloud` or `-cloud`).
@@ -58,9 +58,9 @@ Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after s
 - Probe `GET /v1/models/<id>` for the requested model: 200 → accessible, 401/403/404 → "check ollama signin", 400/422 → "invalid model id (malformed format)", 5xx/timeout/network → distinct "transient daemon" error (not auth misdiagnosis).
 - The bulk `GET /v1/models` is intentionally NOT used — on Ollama 0.23.1 it returns `{"data":null}` even for signed-in cloud profiles.
 
-**Catalog**: `listModels()` returns the intersection of a hardcoded `OLLAMA_CLOUD_CATALOG` (mirroring `cmd/launch/claude.go` upstream) and the per-model 200-OK probes. No `variants` field — UI hides the effort dropdown.
+**Catalog**: `OLLAMA_CLOUD_CATALOG` is an explicit `Array<{ id, contextWindow }>` with bare daemon-facing ids and per-model token limits from the model pages on https://ollama.com. `listModels()` returns the intersection of catalog ids and per-model `/v1/models/<id>` 200-OK probes. No `variants` field — UI hides the effort dropdown. Models not present in the catalog are still accepted by `setup()` (the cloud-only guard + probe handle them) but receive no context-window publication and no `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; the UI falls back to the 200K default.
 
-**Per-session env** (closely mirrors `ollama launch claude --model <name>`, with one intentional divergence — see below):
+**Per-session env** (closely mirrors `ollama launch claude --model <name>`):
 
 - `ANTHROPIC_BASE_URL=<resolved daemon URL>`
 - `ANTHROPIC_AUTH_TOKEN=ollama` (sentinel — daemon recognizes it; takes precedence over ANTHROPIC_API_KEY in upstream `claude`)
@@ -68,13 +68,13 @@ Wraps `ClaudeDriver` via composition: delegates `runSession`/`startChat` after s
 - `ANTHROPIC_DEFAULT_OPUS_MODEL`/`SONNET_MODEL`/`HAIKU_MODEL` = chosen model
 - `CLAUDE_CODE_SUBAGENT_MODEL` = chosen model
 - `CLAUDE_CODE_ATTRIBUTION_HEADER=0`
-- `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = parsed from `[Nm]/[Nk]` suffix in the model id; omitted when no suffix. **Intentional divergence** from upstream's `lookupCloudModelLimit()`: simpler and avoids drift in a hardcoded model→context map.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW` = `contextWindow` from the catalog entry; omitted when the model is not in the catalog.
+
+**UI context-window publication**: `setup()` also calls `setContextWindow(model, contextWindow)` (`core/drivers/context-window.ts`) so `agent:context_usage` events emitted by the inner `ClaudeDriver` carry the correct limit. Without this publication the UI would show 200K for every Ollama cloud model — none of the substrings (`opus-4`/`sonnet-4`/`haiku`) in the hardcoded `CONTEXT_WINDOWS` table matches an Ollama-cloud id. The guard in `setContextWindow` is relaxed: for models unknown to the substring table, any positive value is accepted (so `glm-5.1:cloud`'s 198K — below the 200K default — survives the cache write).
 
 **Env hygiene**: before applying overrides, all `ANTHROPIC_*`/`CLAUDE_CODE_*` keys leaking from the parent process are stripped in `buildEnv()`. The same strip is applied symmetrically to caller-supplied `opts.env` in `runSession`/`startChat` (`stripManagedNamespaces`) so the contract holds in both directions — opts.env can pass through PATH overrides, proxies, custom test vars, but cannot reintroduce managed keys. Other env (PATH, HOME, language, proxies, etc.) is preserved.
 
 **Variant**: `runSession()`/`startChat()` strip `opts.variant` before delegating. Cloud non-Claude models do not honor Claude's `effort` knob; persisted CLI/UI variants would otherwise leak through.
-
-**Daemon-facing strip**: The `[Nm]/[Nk]` suffix is prorab-internal decoration. `stripContextSuffix()` removes it before any daemon-facing operation — both the `/v1/models/<id>` probe AND the `ANTHROPIC_DEFAULT_*_MODEL` / `CLAUDE_CODE_SUBAGENT_MODEL` env vars sent to the SDK. The `CLAUDE_CODE_AUTO_COMPACT_WINDOW` parsing still sees the original decorated form. The daemon would otherwise reject decorated ids with HTTP 400 "invalid model name".
 
 **Auth**: relies entirely on the user's `ollama signin` (Ed25519 key in `~/.ollama/id_ed25519`). prorab never reads upstream tokens or signs requests itself; the daemon does.
 
