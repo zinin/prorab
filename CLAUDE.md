@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is prorab
 
-Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, and Codex. Reads tasks directly from `.taskmaster/tasks/tasks.json` (Task Master format), executes each via agent sessions (Claude Code, OpenCode, CCS, or Codex), auto-commits results. No `task-master` CLI dependency — all task I/O is in-process. Two commands: `prorab run` (autonomous execution) and `prorab serve` (web UI for task management).
+Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, Codex, and Ollama. Reads tasks directly from `.taskmaster/tasks/tasks.json` (Task Master format), executes each via agent sessions (Claude Code, OpenCode, CCS, Codex, or Ollama), auto-commits results. No `task-master` CLI dependency — all task I/O is in-process. Two commands: `prorab run` (autonomous execution) and `prorab serve` (web UI for task management).
 
 ## Commands
 
