@@ -27,7 +27,8 @@ export function modelsRoutes() {
       // Check lifetime cache (resolved array or in-flight promise)
       // CCS listModels() is a pure file scan — skip cache so it always re-scans
       // Codex: cache in-flight promise but do not cache empty results (CLI may not be running yet)
-      if (agent !== "ccs") {
+      // Ollama: per-request probe of /v1/models/<id> — re-probe so signin/signout becomes visible
+      if (agent !== "ccs" && agent !== "ollama") {
         const cached = cache.get(agent);
         if (cached) {
           const models = await cached;
@@ -37,7 +38,8 @@ export function modelsRoutes() {
 
       // CCS listModels() is a pure file scan — no setup/teardown needed
       // Codex listModels() reads ~/.codex/models_cache.json — no setup/teardown needed
-      const needsSetup = agent !== "ccs" && agent !== "codex";
+      // Ollama listModels() probes the local daemon directly — no setup/teardown needed (and setup() requires a model)
+      const needsSetup = agent !== "ccs" && agent !== "codex" && agent !== "ollama";
 
       const promise = (async () => {
         const driver = createDriver(agent);
@@ -58,12 +60,12 @@ export function modelsRoutes() {
         }
       })();
 
-      if (agent !== "ccs") {
+      if (agent !== "ccs" && agent !== "ollama") {
         cache.set(agent, promise);
       }
       try {
         const models = await promise;
-        if (agent !== "ccs") {
+        if (agent !== "ccs" && agent !== "ollama") {
           // Codex: do not cache empty results — CLI may not be running yet (no ~/.codex/models_cache.json)
           if (agent === "codex" && models.length === 0) {
             cache.delete(agent);

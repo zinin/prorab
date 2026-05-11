@@ -135,6 +135,7 @@ const batchAgentOptions = [
   { label: "OpenCode", value: "opencode" },
   { label: "CCS", value: "ccs" },
   { label: "Codex", value: "codex" },
+  { label: "Ollama", value: "ollama" },
 ];
 
 const batchVariantOptions = computed(() =>
@@ -790,7 +791,7 @@ watch(() => refinePrdStore.outcome, (oc) => {
               class="expand-dialog__select"
             />
           </div>
-          <label v-if="batchAgent === 'claude' || batchAgent === 'ccs'" class="expand-dialog__checkbox">
+          <label v-if="batchAgent === 'claude' || batchAgent === 'ccs' || batchAgent === 'ollama'" class="expand-dialog__checkbox">
             <Checkbox v-model="batchNoUserSettings" :binary="true" />
             No user settings
           </label>

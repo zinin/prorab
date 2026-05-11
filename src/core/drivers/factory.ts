@@ -3,6 +3,7 @@ import type { AgentDriver } from "./types.js";
 import { CcsDriver } from "./ccs.js";
 import { ClaudeDriver } from "./claude.js";
 import { CodexDriver } from "./codex.js";
+import { OllamaDriver } from "./ollama.js";
 import { OpenCodeDriver } from "./opencode.js";
 
 export function createDriver(
@@ -20,6 +21,8 @@ export function createDriver(
       return new CcsDriver(model, useUserSettings, applyHooks);
     case "codex":
       return new CodexDriver(model);
+    case "ollama":
+      return new OllamaDriver(model, useUserSettings);
     default:
       throw new Error(`Unknown agent type: ${agent}`);
   }

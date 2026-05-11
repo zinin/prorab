@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is prorab
 
-Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, and Codex. Reads tasks directly from `.taskmaster/tasks/tasks.json` (Task Master format), executes each via agent sessions (Claude Code, OpenCode, CCS, or Codex), auto-commits results. No `task-master` CLI dependency — all task I/O is in-process. Two commands: `prorab run` (autonomous execution) and `prorab serve` (web UI for task management).
+Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, Codex, and Ollama. Reads tasks directly from `.taskmaster/tasks/tasks.json` (Task Master format), executes each via agent sessions (Claude Code, OpenCode, CCS, Codex, or Ollama), auto-commits results. No `task-master` CLI dependency — all task I/O is in-process. Two commands: `prorab run` (autonomous execution) and `prorab serve` (web UI for task management).
 
 ## Commands
 
@@ -27,7 +27,7 @@ src/
 │   ├── run.ts            # Main execution loop
 │   └── serve.ts          # Fastify server setup
 ├── core/
-│   ├── drivers/          # AgentDriver strategy: claude.ts, opencode.ts, ccs.ts, codex.ts, factory.ts, types.ts, logging.ts, context-window.ts, async-queue.ts
+│   ├── drivers/          # AgentDriver strategy: claude.ts, opencode.ts, ccs.ts, codex.ts, ollama.ts, factory.ts, types.ts, logging.ts, context-window.ts, async-queue.ts
 │   ├── tasks-json.ts     # Direct tasks.json I/O, findNextAction, setStatus, CRUD, writeExpandSubtasks, writeComplexityFields
 │   ├── tasks-json-types.ts # Zod schemas for tasks.json format
 │   ├── git.ts            # Git operations (auto-commit, dirty check, expand/complexity preflight/commit)
@@ -76,7 +76,7 @@ ui/                       # Vue 3 + Vite + PrimeVue SPA
 
 **Agent signals**: XML tags in agent output: `<task-complete>`, `<task-blocked>`, `<task-report>`, `<review-report>`, `<prd-ready>`. Parsed by regex in `drivers/types.ts`. Blocked takes priority over complete. Expand/complexity agents use structured JSON output instead of XML signals.
 
-**Agent drivers**: Strategy pattern — `AgentDriver` with `ClaudeDriver`, `OpenCodeDriver`, `CcsDriver`, and `CodexDriver`. Both batch (`runSession`) and interactive chat (`startChat/sendMessage/replyQuestion/abortChat`). Selected via `--agent claude|opencode|ccs|codex`.
+**Agent drivers**: Strategy pattern — `AgentDriver` with `ClaudeDriver`, `OpenCodeDriver`, `CcsDriver`, `CodexDriver`, and `OllamaDriver`. Both batch (`runSession`) and interactive chat (`startChat/sendMessage/replyQuestion/abortChat`). Selected via `--agent claude|opencode|ccs|codex|ollama`.
 
 **Commit strategy**: agent commits own code; prorab auto-commits uncommitted work (excluding `.taskmaster/`); prorab separately commits `.taskmaster/` changes.
 

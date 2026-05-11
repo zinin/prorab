@@ -208,6 +208,7 @@ const expandAgentOptions = [
   { label: "OpenCode", value: "opencode" },
   { label: "CCS", value: "ccs" },
   { label: "Codex", value: "codex" },
+  { label: "Ollama", value: "ollama" },
 ];
 
 const expandVariantOptions = computed(() =>
@@ -580,7 +581,7 @@ watch(() => expandStore.outcome, (outcome) => {
           />
         </div>
 
-        <label v-if="expandAgent === 'claude' || expandAgent === 'ccs'" class="expand-dialog__checkbox">
+        <label v-if="expandAgent === 'claude' || expandAgent === 'ccs' || expandAgent === 'ollama'" class="expand-dialog__checkbox">
           <Checkbox v-model="expandNoUserSettings" :binary="true" />
           No user settings
         </label>
