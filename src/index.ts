@@ -37,7 +37,7 @@ program
   .description("Execute tasks from task-master autonomously")
   .option("--agent <type>", 'Agent backend: "claude", "opencode", "ccs", "codex", or "ollama"', "claude")
   .option("--model <model>", "Model for the agent (optional)")
-  .option("--variant <variant>", "Effort level (Claude: low/medium/high/max) or model variant (OpenCode)")
+  .option("--variant <variant>", "Effort level (Claude/CCS: low/medium/high/xhigh; Codex also max/ultra) or model variant (OpenCode)")
   .option("--max-retries <number>", "Max retry attempts per task", "3")
   .option("--max-turns <number>", "Max turns per task attempt (execute/rework)", "200")
   .option("--review-max-turns <number>", "Max turns per review/aggregator attempt", "100")

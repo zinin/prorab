@@ -74,12 +74,27 @@ describe("computeVariantOptions", () => {
     expect(computeVariantOptions(models, "")).toEqual([]);
   });
 
-  it("returns empty array when some models have no variants", () => {
+  it("ignores models with no variants when checking uniformity", () => {
     const models: ModelEntry[] = [
       { id: "m1", name: "Model 1", variants: ["low", "high"] },
       { id: "m2", name: "Model 2" },
     ];
-    expect(computeVariantOptions(models, "")).toEqual([]);
+    expect(computeVariantOptions(models, "")).toEqual(["low", "high"]);
+  });
+
+  it("keeps the Effort field available for the real Claude model list", () => {
+    // The SDK reports effort levels per model: opus/fable/sonnet share a set,
+    // Haiku exposes none. The agent-wide field must still offer the shared set.
+    const models: ModelEntry[] = [
+      { id: "default", name: "Default (recommended)", variants: ["low", "medium", "high", "xhigh"] },
+      { id: "opus[1m]", name: "Opus (1M context)", variants: ["low", "medium", "high", "xhigh"] },
+      { id: "claude-fable-5[1m]", name: "Fable", variants: ["low", "medium", "high", "xhigh"] },
+      { id: "sonnet", name: "Sonnet", variants: ["low", "medium", "high", "xhigh"] },
+      { id: "haiku", name: "Haiku" },
+    ];
+    expect(computeVariantOptions(models, "")).toEqual(["low", "medium", "high", "xhigh"]);
+    // Pinning Haiku still hides the field.
+    expect(computeVariantOptions(models, "haiku")).toEqual([]);
   });
 
   it("returns empty array when first model has empty variants", () => {

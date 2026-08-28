@@ -15,19 +15,27 @@ export interface ModelEntry {
  * Compute available variant options based on selected model and full model list.
  *
  * - If a model is selected, returns that model's variants.
- * - If no model is selected, returns variants only if ALL models share
- *   the exact same variant set (useful when agent-wide variants are uniform).
+ * - If no model is selected, returns variants only if every model that offers
+ *   variants at all shares the exact same set.
+ *
+ * Models that expose no variants are ignored by that check rather than
+ * suppressing it. An agent may mix the two: the Claude SDK reports effort
+ * levels per model, and Haiku has no effort knob while Opus, Sonnet and Fable
+ * all share one set. Treating that as "not uniform" would hide the Effort
+ * field in the default, no-model-selected state and leave effort unreachable
+ * until the user pinned a model. Selecting such a model still yields `[]`
+ * through the branch above, which correctly hides the field.
  */
 export function computeVariantOptions(models: ModelEntry[], selectedModelId: string): string[] {
   if (selectedModelId) {
     const entry = models.find(m => m.id === selectedModelId);
     return entry?.variants ?? [];
   }
-  // No model selected — show variants if ALL models share the same set
-  if (models.length === 0) return [];
-  const first = models[0].variants ?? [];
-  if (first.length === 0) return [];
-  const allSame = models.every(m => {
+  // No model selected — show variants if every model that has them agrees
+  const withVariants = models.filter(m => (m.variants ?? []).length > 0);
+  if (withVariants.length === 0) return [];
+  const first = withVariants[0].variants ?? [];
+  const allSame = withVariants.every(m => {
     const v = m.variants ?? [];
     return v.length === first.length && first.every(f => v.includes(f));
   });

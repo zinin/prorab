@@ -41,6 +41,24 @@ describe("getContextWindow", () => {
     expect(getContextWindow("claude-opus-5")).toBe(200_000);
     expect(getContextWindow("claude-sonnet-5")).toBe(200_000);
   });
+
+  it("does not apply the [1m] marker to non-Claude ids", () => {
+    // CcsDriver passes each profile's ANTHROPIC_MODEL straight to ClaudeDriver,
+    // and those ids carry the same decoration without being Claude models.
+    expect(getContextWindow("deepseek-v4-pro[1m]")).toBe(200_000);
+    expect(getContextWindow("glm-5.3[1m]")).toBe(200_000);
+    expect(getContextWindow("qwen3.7-max[1m]")).toBe(200_000);
+    // Documented Ollama reviewer spec form (see reviewer-utils.ts).
+    expect(getContextWindow("deepseek-v4-pro:cloud[1m]")).toBe(200_000);
+    expect(getContextWindow("kimi-k3:cloud[1m]")).toBe(200_000);
+  });
+
+  it("still resolves the Claude short aliases the CLI offers", () => {
+    expect(getContextWindow("opus[1m]")).toBe(1_000_000);
+    expect(getContextWindow("sonnet")).toBe(200_000);
+    expect(getContextWindow("haiku")).toBe(200_000);
+    expect(getContextWindow("default")).toBe(200_000);
+  });
 });
 
 describe("setContextWindow / cache", () => {
@@ -88,6 +106,15 @@ describe("setContextWindow / cache", () => {
   it("Ollama-cloud limits below the default still survive (no baseline to defend)", () => {
     setContextWindow("glm-5.1:cloud", 198_000);
     expect(getContextWindow("glm-5.1:cloud")).toBe(198_000);
+  });
+
+  it("non-Claude [1m] ids stay correctable — the table must not guard them", () => {
+    // If the [1m] row claimed these, `matched` would be true with a 1M
+    // baseline and the real runtime-reported limit would be discarded forever.
+    setContextWindow("deepseek-v4-pro:cloud[1m]", 198_000);
+    expect(getContextWindow("deepseek-v4-pro:cloud[1m]")).toBe(198_000);
+    setContextWindow("qwen3.7-max[1m]", 262_000);
+    expect(getContextWindow("qwen3.7-max[1m]")).toBe(262_000);
   });
 
   it("_resetContextWindowCache clears all cached values", () => {

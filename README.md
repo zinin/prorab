@@ -84,7 +84,7 @@ An original addition: multiple AI models review the same code changes independen
   - **OpenCode**: any provider supported by OpenCode
   - **CCS** ([Claude Code Switch](https://github.com/kaitranntt/ccs)): any provider supported by CCS (GLM, Ollama, LiteLLM, etc.)
   - **Codex**: `OPENAI_API_KEY`
-  - **Ollama**: local `ollama serve` daemon for cloud models (deepseek-v4-pro/flash, kimi-k3, kimi-k2.7-code, kimi-k2.6, minimax-m3, minimax-m2.7, qwen3.5, glm-5.3/5.3-flash/5.2/5.1, nemotron-3-ultra/super, mistral-large-3); requires `ollama signin` for the chosen cloud model
+  - **Ollama**: local `ollama serve` daemon for cloud models (deepseek-v4-pro/flash, kimi-k3, kimi-k2.7-code, kimi-k2.6, minimax-m3, minimax-m2.7, qwen3.5, glm-5.3/5.3-flash/5.2/5.1, nemotron-3-ultra/super, mistral-large-3:675b-cloud); all take a `:cloud` tag except mistral-large-3, which is published only as `675b-cloud`. Requires `ollama signin` for the chosen cloud model
 
 ## Installation
 
