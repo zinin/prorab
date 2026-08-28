@@ -49,8 +49,8 @@ describe("ChatView thin wrapper contract", () => {
       expect(templateSection).toMatch(/:pending-question\s*=\s*"chatStore\.pendingQuestion"/);
     });
 
-    it("passes canStop derived from chatStore.state", () => {
-      expect(templateSection).toMatch(/:can-stop\s*=\s*"chatStore\.state\s*!==\s*'idle'"/);
+    it("passes can-stop unconditionally — the panel only renders when not idle", () => {
+      expect(templateSection).toMatch(/:can-stop\s*=\s*"true"/);
     });
   });
 

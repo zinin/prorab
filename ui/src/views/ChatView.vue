@@ -76,13 +76,18 @@ async function handleStop() {
       :starting="startingChat"
       @start="handleWizardStart"
     />
+    <!--
+      can-stop is unconditional: this branch only renders when the session is
+      not idle, so stopping is always meaningful. The panel disables the button
+      itself while the state is 'stopping'.
+    -->
     <AgentChatPanel
       v-else
       :messages="chatStore.messages"
       :state="chatStore.state"
       :awaiting-user-input="chatStore.awaitingUserInput"
       :pending-question="chatStore.pendingQuestion"
-      :can-stop="chatStore.state !== 'idle'"
+      :can-stop="true"
       @send="handleSend"
       @reply="handleReply"
       @stop="handleStop"

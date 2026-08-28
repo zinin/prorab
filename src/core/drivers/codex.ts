@@ -16,7 +16,10 @@ import { SessionLogger } from "./logging.js";
 import { setContextWindow } from "./context-window.js";
 import { AsyncQueue } from "./async-queue.js";
 
-const DEFAULT_CODEX_MODEL = "gpt-5.4";
+// Fallback when no --model is given. Kept in sync with the top-priority
+// `visibility: "list"` entry in ~/.codex/models_cache.json, which listModels()
+// reads dynamically — only this hardcoded default needs bumping by hand.
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 const DEFAULT_CODEX_CONTEXT_WINDOW = 272_000;
 
 export class CodexDriver implements AgentDriver {
