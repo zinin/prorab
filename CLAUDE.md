@@ -13,7 +13,7 @@ Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, Codex,
 - `npm test` — run all tests (`vitest run`)
 - `npx vitest run src/__tests__/parse-signal.test.ts` — run a single test file
 - `npm run build:ui` — build Vue frontend (`cd ui && vite build`)
-- `npx vue-tsc --noEmit --project ui/tsconfig.json` — type-check Vue SFC files (Vite skips type checking, run this after UI changes)
+- `npm run typecheck:ui` — type-check Vue SFC files (Vite skips type checking, run this after UI changes). Do not use `npx vue-tsc`: npx resolves a fresh `typescript`, and vue-tsc cannot load TypeScript 7 (`ERR_PACKAGE_PATH_NOT_EXPORTED` on `./lib/tsc`). The script uses the version pinned in `ui/devDependencies`.
 - `npm run dev:ui` — Vite dev server for frontend (`cd ui && vite dev`)
 - `prorab serve` — start web UI server
 

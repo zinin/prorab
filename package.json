@@ -11,6 +11,7 @@
     "build": "tsc && cd ui && npm run build",
     "build:server": "tsc",
     "build:ui": "cd ui && npm run build",
+    "typecheck:ui": "cd ui && npm run typecheck",
     "dev": "tsc --watch",
     "dev:server": "tsc --watch",
     "dev:ui": "cd ui && npm run dev",
