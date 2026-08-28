@@ -5,7 +5,8 @@ export default defineConfig({
   resolve: {
     alias: {
       vue: resolve(import.meta.dirname, "ui/node_modules/vue"),
-      pinia: resolve(import.meta.dirname, "ui/node_modules/pinia/dist/pinia.cjs"),
+      // pinia 4 dropped the CJS build; pinia.js is the ESM entry it ships now.
+      pinia: resolve(import.meta.dirname, "ui/node_modules/pinia/dist/pinia.js"),
     },
   },
   test: {
