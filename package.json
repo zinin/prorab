@@ -1,6 +1,6 @@
 {
   "name": "prorab",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Autonomous task execution CLI powered by Claude Agent SDK, OpenCode, CCS, Codex, and Ollama",
   "license": "AGPL-3.0-or-later",
   "type": "module",
