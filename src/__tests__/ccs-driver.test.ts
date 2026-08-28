@@ -434,12 +434,12 @@ describe("CcsDriver", () => {
         {
           id: "profile-a",
           name: "profile-a (claude-sonnet-4-20250514)",
-          variants: ["low", "medium", "high", "max"],
+          variants: ["low", "medium", "high", "xhigh", "max"],
         },
         {
           id: "profile-b",
           name: "profile-b (claude-opus-4-20250514)",
-          variants: ["low", "medium", "high", "max"],
+          variants: ["low", "medium", "high", "xhigh", "max"],
         },
       ]);
     });

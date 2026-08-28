@@ -46,12 +46,23 @@ const PREFLIGHT_TIMEOUT_MS = resolvePreflightTimeout();
  * falls back to the 200K default.
  */
 const OLLAMA_CLOUD_CATALOG: ReadonlyArray<{ id: string; contextWindow: number }> = [
-  { id: "deepseek-v4-pro:cloud",   contextWindow: 1_000_000 },
-  { id: "deepseek-v4-flash:cloud", contextWindow: 1_000_000 },
-  { id: "kimi-k2.6:cloud",         contextWindow:   256_000 },
-  { id: "minimax-m2.7:cloud",      contextWindow:   200_000 },
-  { id: "qwen3.5:cloud",           contextWindow:   256_000 },
-  { id: "glm-5.1:cloud",           contextWindow:   198_000 },
+  { id: "deepseek-v4-pro:cloud",      contextWindow: 1_000_000 },
+  { id: "deepseek-v4-flash:cloud",    contextWindow: 1_000_000 },
+  { id: "kimi-k3:cloud",              contextWindow: 1_000_000 },
+  { id: "kimi-k2.7-code:cloud",       contextWindow:   256_000 },
+  { id: "kimi-k2.6:cloud",            contextWindow:   256_000 },
+  { id: "minimax-m3:cloud",           contextWindow: 1_000_000 },
+  { id: "minimax-m2.7:cloud",         contextWindow:   200_000 },
+  { id: "qwen3.5:cloud",              contextWindow:   256_000 },
+  { id: "glm-5.3:cloud",              contextWindow: 1_000_000 },
+  { id: "glm-5.3-flash:cloud",        contextWindow: 1_000_000 },
+  { id: "glm-5.2:cloud",              contextWindow:   976_000 },
+  { id: "glm-5.1:cloud",              contextWindow:   198_000 },
+  { id: "nemotron-3-ultra:cloud",     contextWindow:   256_000 },
+  { id: "nemotron-3-super:cloud",     contextWindow:   256_000 },
+  // Published only under a size-qualified cloud tag — there is no bare
+  // `mistral-large-3:cloud`. The `-cloud` form is accepted by setup()'s guard.
+  { id: "mistral-large-3:675b-cloud", contextWindow:   256_000 },
 ];
 
 function resolveBaseUrl(): string {

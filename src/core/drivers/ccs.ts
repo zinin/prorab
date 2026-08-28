@@ -218,7 +218,7 @@ export class CcsDriver implements AgentDriver {
         models.push({
           id: profileName,
           name: `${profileName} (${modelName ?? "unknown"})`,
-          variants: ["low", "medium", "high", "max"],
+          variants: ["low", "medium", "high", "xhigh", "max"],
         });
       } catch {
         // Skip malformed settings files

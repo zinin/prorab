@@ -202,18 +202,19 @@ export class ClaudeDriver implements AgentDriver {
     } });
     try {
       const models = await session.supportedModels();
-      // SDK only reports supportedEffortLevels for "default" model,
-      // but effort works with all Claude models — propagate to all entries.
+      // The SDK reports supportedEffortLevels per model, and not every model
+      // has them (Haiku exposes no effort knob at all). Read each entry's own
+      // levels — flattening them into a union and applying it to every model
+      // would offer effort variants on models that reject them.
       // Filter out "max" — not available for Claude.ai subscribers.
-      const effortLevels = models
-        .flatMap((m) => m.supportedEffortLevels ?? [])
-        .filter((v, i, a) => a.indexOf(v) === i)
-        .filter((v) => v !== "max");
-      return models.map((m) => ({
-        id: m.value,
-        name: m.displayName,
-        ...(effortLevels.length > 0 ? { variants: effortLevels } : {}),
-      }));
+      return models.map((m) => {
+        const effortLevels = (m.supportedEffortLevels ?? []).filter((v) => v !== "max");
+        return {
+          id: m.value,
+          name: m.displayName,
+          ...(effortLevels.length > 0 ? { variants: effortLevels } : {}),
+        };
+      });
     } finally {
       session.return?.(undefined);
     }

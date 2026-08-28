@@ -598,7 +598,7 @@ describe("OllamaDriver", () => {
       for (const m of models) expect(m).not.toHaveProperty("variants");
     });
 
-    it("returns all 6 catalog entries when every probe succeeds", async () => {
+    it("returns every catalog entry when every probe succeeds", async () => {
       globalThis.fetch = vi.fn(async (url: string) => {
         const u = String(url);
         if (u.endsWith("/api/version")) return new Response(JSON.stringify({ version: "0.23.1" }), { status: 200 });
@@ -615,8 +615,17 @@ describe("OllamaDriver", () => {
         "deepseek-v4-flash:cloud",
         "deepseek-v4-pro:cloud",
         "glm-5.1:cloud",
+        "glm-5.2:cloud",
+        "glm-5.3-flash:cloud",
+        "glm-5.3:cloud",
         "kimi-k2.6:cloud",
+        "kimi-k2.7-code:cloud",
+        "kimi-k3:cloud",
         "minimax-m2.7:cloud",
+        "minimax-m3:cloud",
+        "mistral-large-3:675b-cloud",
+        "nemotron-3-super:cloud",
+        "nemotron-3-ultra:cloud",
         "qwen3.5:cloud",
       ]);
     });

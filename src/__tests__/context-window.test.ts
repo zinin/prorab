@@ -29,6 +29,18 @@ describe("getContextWindow", () => {
   it("legacy Claude 3 models fall back to default 200_000", () => {
     expect(getContextWindow("claude-3-opus-20240229")).toBe(200_000);
   });
+
+  it("returns 1_000_000 for the [1m] variants the SDK reports", () => {
+    // Both the selectable id and the resolved id carry the marker.
+    expect(getContextWindow("opus[1m]")).toBe(1_000_000);
+    expect(getContextWindow("claude-opus-5[1m]")).toBe(1_000_000);
+    expect(getContextWindow("claude-fable-5[1m]")).toBe(1_000_000);
+  });
+
+  it("returns 200_000 for Claude 5 ids without the [1m] marker", () => {
+    expect(getContextWindow("claude-opus-5")).toBe(200_000);
+    expect(getContextWindow("claude-sonnet-5")).toBe(200_000);
+  });
 });
 
 describe("setContextWindow / cache", () => {
@@ -64,6 +76,18 @@ describe("setContextWindow / cache", () => {
   it("ignores negative contextWindow", () => {
     setContextWindow("custom-model", -1);
     expect(getContextWindow("custom-model")).toBe(200_000);
+  });
+
+  it("a plan-reported 200K does not mask the 1M capability of a [1m] model", () => {
+    // The guard exists precisely for this: an SDK-reported API limit below the
+    // known model capability must be rejected, not cached.
+    setContextWindow("claude-opus-5[1m]", 200_000);
+    expect(getContextWindow("claude-opus-5[1m]")).toBe(1_000_000);
+  });
+
+  it("Ollama-cloud limits below the default still survive (no baseline to defend)", () => {
+    setContextWindow("glm-5.1:cloud", 198_000);
+    expect(getContextWindow("glm-5.1:cloud")).toBe(198_000);
   });
 
   it("_resetContextWindowCache clears all cached values", () => {

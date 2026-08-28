@@ -1,4 +1,17 @@
+/**
+ * Substring → context-window table, checked in order (first match wins).
+ *
+ * `[1m]` comes first because it is the authoritative marker: the SDK exposes
+ * 1M-context variants as explicitly suffixed ids (`opus[1m]`,
+ * `claude-opus-5[1m]`, `claude-fable-5[1m]`). Matching the suffix rather than
+ * a model family keeps the table correct across generations — a bare
+ * `claude-opus-5` really is a 200K model, and only the suffixed variant is 1M.
+ *
+ * The `opus-4`/`sonnet-4` entries are kept for older ids that carry no suffix
+ * (including composite OpenCode ids like `anthropic/claude-opus-4-6`).
+ */
 const CONTEXT_WINDOWS: Array<{ match: string; limit: number }> = [
+  { match: "[1m]", limit: 1_000_000 },
   { match: "opus-4", limit: 1_000_000 },
   { match: "sonnet-4", limit: 1_000_000 },
   { match: "haiku", limit: 200_000 },
@@ -12,10 +25,10 @@ const resolvedCache = new Map<string, number>();
 /**
  * Store a model's context window size.
  *
- * For models that match a substring in CONTEXT_WINDOWS (opus-4 / sonnet-4 /
- * haiku) we keep the original guard: only accept values that are >= the
- * hardcoded fallback. This prevents SDK-reported API limits (e.g. a 200K
- * plan) from masking the known model capability (e.g. Opus 1M).
+ * For models that match a substring in CONTEXT_WINDOWS (`[1m]` / opus-4 /
+ * sonnet-4 / haiku) we keep the original guard: only accept values that are
+ * >= the hardcoded fallback. This prevents SDK-reported API limits (e.g. a
+ * 200K plan) from masking the known model capability (e.g. Opus 1M).
  *
  * For models that do NOT match any substring (e.g. Ollama-cloud ids like
  * `glm-5.1:cloud` with a 198K real limit) there is no hardcoded baseline to
